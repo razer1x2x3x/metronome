@@ -80,11 +80,9 @@ button{cursor:pointer;touch-action:manipulation;-webkit-user-select:none;user-se
 }
 .dot .ring::before{content:"";position:absolute;inset:calc(var(--bw) * -1);border-radius:50%;background:var(--fc,var(--c));opacity:var(--f)}
 .dot .ring>*{position:relative}
-.dot .lv{display:none;font-size:calc(var(--slot) * var(--k) * .17);font-weight:600;margin-top:.25em}
 .dot[data-level="3"]{--k:1;--c:var(--accent)}
-.dot[data-level="2"]{--k:.8;--c:var(--mid)}
-.dot[data-level="1"]{--k:.6;--c:var(--weak);--fc:var(--beat)}
-.dot[data-level="0"]{--k:.6;--c:var(--weak)}
+.dot[data-level="2"]{--k:.72;--c:var(--mid)}
+.dot[data-level="0"]{--k:.72;--c:var(--weak)}
 .dot[data-level="0"] .ring{border-style:dashed;opacity:.75}
 .dot.cur .ring{color:var(--ink);transform:scale(1.1)}
 .dot.lit .ring{color:var(--accent-ink)}
@@ -92,7 +90,6 @@ button{cursor:pointer;touch-action:manipulation;-webkit-user-select:none;user-se
 .visual.lights .dots{flex:1;align-content:center;padding:8px}
 .visual:not(.lights) .dots{gap:6px !important}
 .visual.lights .dot{--slot:var(--ds,110px);--bw:5px}
-.visual.lights .dot .lv{display:block}
 .hint-row{display:flex;align-items:center;justify-content:center;gap:10px;flex-wrap:wrap;margin-top:6px}
 .hint{margin:0;text-align:center;font-size:13px;color:var(--muted)}
 .reset{height:32px;padding:0 12px;border-radius:999px;border:1px solid var(--line);background:var(--surface-2);font-size:13px;font-weight:600;color:var(--muted)}
@@ -256,8 +253,8 @@ input[type=range]{width:100%;accent-color:var(--accent);height:28px;margin:0}
           <div class="dots" id="dots"></div>
         </div>
         <div class="hint-row">
-          <p class="hint">點圓點切換重音：大＝強、中＝中、小＝弱、虛線＝靜音</p>
-          <button class="reset" id="accReset" aria-label="重音全部重設為中">重設（全部為中）</button>
+          <p class="hint">點擊圓點切換重音</p>
+          <button class="reset" id="accReset" aria-label="重音全部重設為中">重設</button>
         </div>
       </section>
 
@@ -349,18 +346,20 @@ const TERMS = [
   {it:'Prestissimo',      zh:'最急板',       lo:200, hi:Infinity, def:208, rng:'≥ 200'},
 ];
 
-// accent levels: 3 strong, 2 medium, 1 weak, 0 mute
+// accent levels: 3 大 (accent), 2 中 (ordinary beat), 0 靜 (mute). Default: accent on beat 1 only.
 const METERS = {
-  '1/4':{unit:4, acc:[1]},
-  '2/4':{unit:4, acc:[3,1]},
-  '3/4':{unit:4, acc:[3,1,1]},
-  '4/4':{unit:4, acc:[3,1,1,1]},
-  '5/4':{unit:4, acc:[3,1,1,2,1]},
-  '6/8':{unit:8, acc:[3,1,1,2,1,1]},
-  '7/8':{unit:8, acc:[3,1,2,1,2,1,1]},
-  '9/8':{unit:8, acc:[3,1,1,2,1,1,2,1,1]},
-  '12/8':{unit:8, acc:[3,1,1,2,1,1,2,1,1,2,1,1]},
+  '1/4':{unit:4, acc:[2]},
+  '2/4':{unit:4, acc:[3,2]},
+  '3/4':{unit:4, acc:[3,2,2]},
+  '4/4':{unit:4, acc:[3,2,2,2]},
+  '5/4':{unit:4, acc:[3,2,2,2,2]},
+  '6/8':{unit:8, acc:[3,2,2,2,2,2]},
+  '7/8':{unit:8, acc:[3,2,2,2,2,2,2]},
+  '9/8':{unit:8, acc:[3,2,2,2,2,2,2,2,2]},
+  '12/8':{unit:8, acc:[3,2,2,2,2,2,2,2,2,2,2,2]},
 };
+const NEXT_LEVEL = {2:3, 3:0, 0:2};     // tapping a dot: 中 → 大 → 靜 → 中
+const fixLevels = a => a.map(v => v === 3 || v === 0 ? v : 2);   // old saves may hold the removed 弱 (1)
 // beamed-note icon: count heads, number of beams, optional triplet "3"
 function noteIcon(count, beams, tri){
   const gap = 9, x0 = 4, sx = 2.6, w = x0 * 2 + gap * (count - 1) + 2;
@@ -386,7 +385,7 @@ const SOUNDS = [
   {id:'beep',    label:'嗶聲'},
   {id:'cowbell', label:'牛鈴'},
 ];
-const LEVEL_NAME = ['靜','弱','中','強'];
+const LEVEL_NAME = ['靜音','','中','大'];
 
 /* ================= storage ================= */
 const store = {
@@ -397,6 +396,7 @@ const S = Object.assign({bpm:100, meter:'4/4', accents:null, subdiv:1, sound:'wo
                         store.get('metronome.settings', {}) || {});
 if(!METERS[S.meter]) S.meter = '4/4';
 if(!Array.isArray(S.accents) || S.accents.length !== METERS[S.meter].acc.length) S.accents = METERS[S.meter].acc.slice();
+S.accents = fixLevels(S.accents);
 if(!SUBS.some(s => s.n === S.subdiv)) S.subdiv = 1;
 if(!SOUNDS.some(s => s.id === S.sound)) S.sound = 'wood';
 S.bpm = clampBpm(S.bpm);
@@ -424,7 +424,7 @@ function ensureAudio(){
   const AC = window.AudioContext || window.webkitAudioContext;
   try{ ctx = new AC({latencyHint:'interactive'}); }catch(e){ ctx = new AC(); }
   const comp = ctx.createDynamicsCompressor();          // soft limiter so loud clicks never clip
-  comp.threshold.value = -4; comp.knee.value = 2; comp.ratio.value = 12; comp.attack.value = 0.001; comp.release.value = 0.05;
+  comp.threshold.value = -1.5; comp.knee.value = 1; comp.ratio.value = 12; comp.attack.value = 0.001; comp.release.value = 0.05;
   master = ctx.createGain(); master.gain.value = volGain(S.volume);
   master.connect(comp); comp.connect(ctx.destination);
   const len = Math.floor(ctx.sampleRate * 0.05);
@@ -443,28 +443,43 @@ function env(g, t, peak, decay){
   g.gain.exponentialRampToValueAtTime(Math.max(peak, 0.0002), t + 0.0015);
   g.gain.exponentialRampToValueAtTime(0.0001, t + decay);
 }
-const AMP = {acc:1, mid:0.78, norm:0.6, sub:0.34};
+// lv: 'acc' = 大 (accented beat), 'norm' = 中 (ordinary beat), 'sub' = subdivision
+const AMP = {acc:1.3, norm:0.5, sub:0.3};
+// 大 gets a higher pitch plus a bright transient on top, so it stands out clearly over a piano
+function sparkle(t, a, out, hp){
+  const n = ctx.createBufferSource(); n.buffer = noiseBuf;
+  const f = ctx.createBiquadFilter(); f.type = 'highpass'; f.frequency.value = hp;
+  const g = ctx.createGain(); env(g, t, a, 0.025);
+  n.connect(f); f.connect(g); g.connect(out); n.start(t); n.stop(t + 0.035);
+}
+function partial(t, type, freq, a, decay, out){
+  const o = ctx.createOscillator(); o.type = type; o.frequency.value = freq;
+  const g = ctx.createGain(); env(g, t, a, decay);
+  o.connect(g); g.connect(out); o.start(t); o.stop(t + decay + 0.02);
+}
 const VOICES = {
   wood(t, lv, out){
-    const f = {acc:1320, mid:1110, norm:960, sub:780}[lv], a = AMP[lv];
-    const o = ctx.createOscillator(); o.type = 'sine';
+    const acc = lv === 'acc', f = {acc:1760, norm:960, sub:780}[lv], a = AMP[lv];
+    const o = ctx.createOscillator(); o.type = acc ? 'triangle' : 'sine';
     o.frequency.setValueAtTime(f * 1.3, t); o.frequency.exponentialRampToValueAtTime(f, t + 0.01);
-    const g = ctx.createGain(); env(g, t, a * 0.9, 0.07);
-    o.connect(g); g.connect(out); o.start(t); o.stop(t + 0.09);
+    const g = ctx.createGain(); env(g, t, a * 0.9, acc ? 0.09 : 0.07);
+    o.connect(g); g.connect(out); o.start(t); o.stop(t + 0.11);
     const n = ctx.createBufferSource(); n.buffer = noiseBuf;
     const bp = ctx.createBiquadFilter(); bp.type = 'bandpass'; bp.frequency.value = f * 2.4; bp.Q.value = 2.5;
     const ng = ctx.createGain(); env(ng, t, a * 0.7, 0.018);
     n.connect(bp); bp.connect(ng); ng.connect(out); n.start(t); n.stop(t + 0.03);
+    if(acc){ partial(t, 'sine', f * 2.76, a * 0.3, 0.05, out); sparkle(t, a * 0.45, out, 5000); }
   },
   click(t, lv, out){
-    const f = {acc:2500, mid:2050, norm:1750, sub:1350}[lv], a = AMP[lv];
+    const acc = lv === 'acc', f = {acc:3520, norm:1750, sub:1350}[lv], a = AMP[lv];
     const o = ctx.createOscillator(); o.type = 'square'; o.frequency.value = f;
-    const lp = ctx.createBiquadFilter(); lp.type = 'lowpass'; lp.frequency.value = 7000;
-    const g = ctx.createGain(); env(g, t, a * 0.35, 0.028);
-    o.connect(lp); lp.connect(g); g.connect(out); o.start(t); o.stop(t + 0.04);
+    const lp = ctx.createBiquadFilter(); lp.type = 'lowpass'; lp.frequency.value = acc ? 10000 : 7000;
+    const g = ctx.createGain(); env(g, t, a * 0.5, acc ? 0.035 : 0.028);
+    o.connect(lp); lp.connect(g); g.connect(out); o.start(t); o.stop(t + 0.05);
+    if(acc) sparkle(t, a * 0.35, out, 6000);
   },
   beep(t, lv, out){
-    const f = {acc:1760, mid:1320, norm:1047, sub:784}[lv], a = AMP[lv];
+    const acc = lv === 'acc', f = {acc:2093, norm:1047, sub:784}[lv], a = AMP[lv];
     const o = ctx.createOscillator(); o.type = 'sine'; o.frequency.value = f;
     const g = ctx.createGain();
     g.gain.setValueAtTime(0.0001, t);
@@ -472,9 +487,10 @@ const VOICES = {
     g.gain.setValueAtTime(a * 0.75, t + 0.05);
     g.gain.exponentialRampToValueAtTime(0.0001, t + 0.12);
     o.connect(g); g.connect(out); o.start(t); o.stop(t + 0.13);
+    if(acc) partial(t, 'sine', f * 2, a * 0.25, 0.1, out);
   },
   cowbell(t, lv, out){
-    const f = {acc:800, mid:690, norm:587, sub:480}[lv], a = AMP[lv];
+    const acc = lv === 'acc', f = {acc:1000, norm:587, sub:480}[lv], a = AMP[lv];
     const bp = ctx.createBiquadFilter(); bp.type = 'bandpass'; bp.frequency.value = f * 1.9; bp.Q.value = 1.4;
     const g = ctx.createGain(); env(g, t, a * 0.6, 0.22);
     bp.connect(g); g.connect(out);
@@ -482,10 +498,11 @@ const VOICES = {
       const o = ctx.createOscillator(); o.type = 'square'; o.frequency.value = f * m;
       o.connect(bp); o.start(t); o.stop(t + 0.24);
     }
+    if(acc) sparkle(t, a * 0.3, out, 5000);
   },
 };
 function voice(t, lv, out){ (VOICES[S.sound] || VOICES.wood)(t, lv, out || bus || master); }
-const LV_KEY = [null, 'norm', 'mid', 'acc'];
+const LV_KEY = [null, 'norm', 'norm', 'acc'];   // level → voice (level 1 no longer used; kept safe for old saves)
 
 /* ================= scheduler =================
    Sounds are queued on the AudioContext clock a little ahead of time, so the
@@ -727,7 +744,7 @@ optionMenu('soundMenu', SOUNDS, it => it.id === S.sound, it => {
 
 function setMeter(key, accents){
   S.meter = key;
-  S.accents = (accents && accents.length === METERS[key].acc.length) ? accents.slice() : METERS[key].acc.slice();
+  S.accents = (accents && accents.length === METERS[key].acc.length) ? fixLevels(accents) : METERS[key].acc.slice();
   if(beatIdx >= S.accents.length) beatIdx = 0;
   $('unit').textContent = (METERS[key].unit === 8 ? '♪︎' : '♩︎') + ' =';
   renderDots(); renderMeter(); save();
@@ -751,11 +768,10 @@ function renderDots(){
     const b = document.createElement('button');
     b.className = 'dot'; b.dataset.level = lv;
     b.setAttribute('aria-label', `第 ${i + 1} 拍：${LEVEL_NAME[lv]}（點一下切換）`);
-    b.innerHTML = `<span class="ring"><span>${i + 1}</span><span class="lv">${LEVEL_NAME[lv]}</span></span>`;
+    b.innerHTML = `<span class="ring"><span>${i + 1}</span></span>`;
     b.addEventListener('click', () => {
-      const nv = (S.accents[i] + 3) % 4;       // 3 → 2 → 1 → 0 → 3
+      const nv = NEXT_LEVEL[S.accents[i]] ?? 2;
       S.accents[i] = nv; b.dataset.level = nv;
-      b.querySelector('.lv').textContent = LEVEL_NAME[nv];
       b.setAttribute('aria-label', `第 ${i + 1} 拍：${LEVEL_NAME[nv]}（點一下切換）`);
       save();
     });

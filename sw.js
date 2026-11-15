@@ -1,5 +1,5 @@
 // Offline support: serve from cache immediately, refresh the cache in the background.
-const CACHE = 'metronome-v4';
+const CACHE = 'metronome-v5';
 const ASSETS = [
   './',
   './index.html',
