@@ -1,0 +1,1028 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>節拍器</title>
+<meta name="description" content="可離線使用的網頁節拍器：鐘擺／光點顯示、拍號、重音、細分拍、Tap 測速、常用速度。">
+<meta name="theme-color" content="#f4eee4" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#16130f" media="(prefers-color-scheme: dark)">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="節拍器">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+<link rel="icon" type="image/png" href="icons/icon-192.png">
+<style>
+:root{
+  --bg:#f4eee4; --surface:#fffcf7; --surface-2:#f8f2e8; --ink:#2b241e; --muted:#7c7065; --line:#e5dbcd;
+  --accent:#c4512f; --accent-ink:#fff; --accent-soft:rgba(196,81,47,.12);
+  --mid:#d99a2b; --weak:#8a7d70; --beat:#3f7f6e;
+  --wood:#9a6440; --wood-dark:#5f3a22; --face:#efe4d1; --metal:#b9b2a8; --metal-dark:#6f6860; --shadow:rgba(60,40,20,.18);
+  --radius:18px;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark){
+  :root{
+    --bg:#16130f; --surface:#211d18; --surface-2:#2a251f; --ink:#f1e9dd; --muted:#a99d90; --line:#3a332b;
+    --accent:#ff7b55; --accent-ink:#1a120c; --accent-soft:rgba(255,123,85,.14);
+    --mid:#f0b54c; --weak:#9b8f82; --beat:#5fae98;
+    --wood:#8a5634; --wood-dark:#4a2c18; --face:#e3d6c0; --metal:#cfc8be; --metal-dark:#7d766d; --shadow:rgba(0,0,0,.45);
+    color-scheme: dark;
+  }
+}
+*{box-sizing:border-box}
+html,body{margin:0;height:100%}
+body{
+  background:var(--bg); color:var(--ink);
+  font-family:-apple-system,BlinkMacSystemFont,"PingFang TC","Noto Sans TC","Microsoft JhengHei",sans-serif;
+  -webkit-text-size-adjust:100%;
+}
+button,input{font:inherit;color:inherit}
+button{cursor:pointer;touch-action:manipulation;-webkit-user-select:none;user-select:none;-webkit-touch-callout:none;-webkit-tap-highlight-color:transparent}
+.it{font-family:"Iowan Old Style","Palatino Linotype",Palatino,Georgia,serif;font-style:italic}
+
+.app{
+  max-width:1280px;margin:0 auto;display:flex;flex-direction:column;
+  padding:calc(10px + env(safe-area-inset-top)) calc(16px + env(safe-area-inset-right))
+          calc(16px + env(safe-area-inset-bottom)) calc(16px + env(safe-area-inset-left));
+}
+.top{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:0 2px 10px}
+.top h1{margin:0;font-size:20px;font-weight:700;letter-spacing:.08em}
+.seg{display:inline-flex;background:var(--surface-2);border:1px solid var(--line);border-radius:999px;padding:3px}
+.seg button{border:0;background:transparent;padding:7px 16px;border-radius:999px;font-size:15px;color:var(--muted)}
+.seg button[aria-pressed="true"]{background:var(--surface);color:var(--ink);box-shadow:0 1px 3px var(--shadow);font-weight:600}
+
+/* phone: one scrolling column. iPad: everything fits on one screen (see media queries at the end) */
+.layout{display:grid;gap:14px;grid-template-columns:minmax(0,1fr);grid-template-areas:"stage" "tempo" "set" "fav"}
+.stage{grid-area:stage}.tempo{grid-area:tempo}.set{grid-area:set}.fav-card{grid-area:fav}
+.card{background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);padding:14px;min-width:0}
+.card h2{margin:0 0 10px;font-size:15px;font-weight:600;color:var(--muted);letter-spacing:.04em}
+
+/* ---------- stage ---------- */
+.stage{display:flex;flex-direction:column;padding:12px;min-height:280px;height:44vh}
+.visual{flex:1;display:flex;flex-direction:column;min-height:0;position:relative}
+#pend{flex:1;width:100%;min-height:0;display:block}
+.dots{display:flex;flex-wrap:wrap;justify-content:center;align-items:center;gap:6px;padding:8px 4px 0}
+/* a beat = fixed square slot (stable layout, big tap target) holding a ring sized by its accent level */
+.dot{
+  --slot:40px; --bw:3px; --k:.6; --f:0; --c:var(--weak);
+  position:relative;width:var(--slot);height:var(--slot);border:0;background:transparent;padding:0;
+  display:flex;align-items:center;justify-content:center;
+}
+.dot .ring{
+  position:relative;width:calc(var(--slot) * var(--k));height:calc(var(--slot) * var(--k));border-radius:50%;
+  border:var(--bw) solid var(--c);
+  display:flex;flex-direction:column;align-items:center;justify-content:center;
+  font-size:calc(var(--slot) * var(--k) * .42);font-weight:700;line-height:1;color:var(--muted);font-variant-numeric:tabular-nums;
+  transition:width .15s,height .15s,transform .08s;
+}
+.dot .ring::before{content:"";position:absolute;inset:calc(var(--bw) * -1);border-radius:50%;background:var(--fc,var(--c));opacity:var(--f)}
+.dot .ring>*{position:relative}
+.dot .lv{display:none;font-size:calc(var(--slot) * var(--k) * .17);font-weight:600;margin-top:.25em}
+.dot[data-level="3"]{--k:1;--c:var(--accent)}
+.dot[data-level="2"]{--k:.8;--c:var(--mid)}
+.dot[data-level="1"]{--k:.6;--c:var(--weak);--fc:var(--beat)}
+.dot[data-level="0"]{--k:.6;--c:var(--weak)}
+.dot[data-level="0"] .ring{border-style:dashed;opacity:.75}
+.dot.cur .ring{color:var(--ink);transform:scale(1.1)}
+.dot.lit .ring{color:var(--accent-ink)}
+.visual.lights #pend{display:none}
+.visual.lights .dots{flex:1;align-content:center;padding:8px}
+.visual:not(.lights) .dots{gap:6px !important}
+.visual.lights .dot{--slot:var(--ds,110px);--bw:5px}
+.visual.lights .dot .lv{display:block}
+.hint-row{display:flex;align-items:center;justify-content:center;gap:10px;flex-wrap:wrap;margin-top:6px}
+.hint{margin:0;text-align:center;font-size:13px;color:var(--muted)}
+.reset{height:32px;padding:0 12px;border-radius:999px;border:1px solid var(--line);background:var(--surface-2);font-size:13px;font-weight:600;color:var(--muted)}
+.reset:active{background:var(--line)}
+
+/* ---------- tempo ---------- */
+.tempo{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.5fr);grid-template-areas:"bpm bpm" "rng rng" "pre pre" "tap play";gap:8px 10px;align-items:center}
+.bpm-row{grid-area:bpm;display:grid;grid-template-columns:56px 1fr 56px;align-items:center;gap:8px}
+.step{height:56px;border-radius:50%;border:1px solid var(--line);background:var(--surface-2);font-size:30px;line-height:1;display:flex;align-items:center;justify-content:center}
+.step:active{background:var(--line)}
+.bpm-box{display:grid;grid-template-columns:1fr auto 1fr;align-items:center;min-width:0}
+.unit{justify-self:end;font-size:18px;color:var(--muted);white-space:nowrap;padding-right:4px}
+#bpmInput{
+  width:3.3ch;border:0;background:transparent;text-align:center;
+  font-size:64px;font-weight:700;line-height:1.08;font-variant-numeric:tabular-nums;letter-spacing:-.02em;
+  padding:0;border-radius:12px;outline:none;caret-color:var(--accent);
+}
+#bpmInput:focus{background:var(--accent-soft)}
+input[type=range]{width:100%;accent-color:var(--accent);height:28px;margin:0}
+#bpmRange{grid-area:rng}
+.preset{grid-area:pre}
+.tap{grid-area:tap}.play{grid-area:play}
+.tap,.play{height:54px;border-radius:14px;font-size:18px;font-weight:600;border:1px solid var(--line);white-space:nowrap;padding:0 10px}
+.tap{background:var(--surface-2)}
+.tap.hit{background:var(--accent-soft)}
+.play{background:var(--accent);color:var(--accent-ink);border-color:transparent;display:flex;align-items:center;justify-content:center;gap:10px}
+.play .ico{width:0;height:0;border-left:15px solid currentColor;border-top:9px solid transparent;border-bottom:9px solid transparent}
+.play.on .ico{width:15px;height:15px;border:0;background:currentColor;border-radius:2px}
+
+/* ---------- settings ---------- */
+.set{display:flex;flex-direction:column;justify-content:space-between;gap:10px}
+.picks{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px}
+.nicon{fill:currentColor;flex:none}
+.vol{display:flex;align-items:center;gap:10px;padding:0 2px}
+.vol-cap{font-size:13px;color:var(--muted);white-space:nowrap}
+#volTxt{min-width:30px;text-align:right;color:var(--muted);font-variant-numeric:tabular-nums}
+
+/* ---------- dropdowns: 常用速度, 拍號, 細分拍, 音色 ---------- */
+.menu{position:relative;min-width:0}
+.pick{
+  width:100%;height:54px;display:grid;grid-template-columns:minmax(0,1fr) auto;grid-template-areas:"cap chev" "val chev";
+  align-content:center;align-items:center;column-gap:8px;text-align:left;
+  padding:0 12px 0 14px;border-radius:14px;border:1px solid var(--line);background:var(--surface-2)
+}
+.pick:active{background:var(--line)}
+.pick .cap{grid-area:cap;font-size:12px;line-height:1.25;color:var(--muted)}
+.pick .val{grid-area:val;font-size:17px;font-weight:600;line-height:1.3;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-variant-numeric:tabular-nums}
+.pick .val .zh{font-size:14px;font-weight:500;color:var(--muted);margin-left:6px}
+.pick .val .it{font-weight:600}
+.pick .nicon{height:20px;width:auto;vertical-align:-4px;margin-right:6px}
+.chev{grid-area:chev;width:9px;height:9px;border-right:2px solid var(--muted);border-bottom:2px solid var(--muted);transform:translateY(-2px) rotate(45deg);transition:transform .15s}
+.pick[aria-expanded="true"] .chev{transform:translateY(2px) rotate(-135deg)}
+.menu-panel{
+  position:absolute;left:0;min-width:100%;width:max-content;max-width:min(440px, calc(100vw - 32px));
+  z-index:30;overflow:auto;-webkit-overflow-scrolling:touch;overscroll-behavior:contain;
+  background:var(--surface);border:1px solid var(--line);border-radius:16px;padding:6px;
+  box-shadow:0 12px 32px var(--shadow),0 2px 6px var(--shadow)
+}
+.menu-panel.end{left:auto;right:0}
+.menu-panel.up{bottom:calc(100% + 6px)}
+.menu-panel.down{top:calc(100% + 6px)}
+.opts{display:flex;flex-direction:column;gap:2px}
+.opt{
+  display:flex;align-items:center;gap:10px;width:100%;min-height:48px;padding:0 16px 0 18px;border:0;border-radius:10px;
+  background:transparent;text-align:left;font-size:17px;white-space:nowrap;position:relative;font-variant-numeric:tabular-nums
+}
+.opt:active{background:var(--surface-2)}
+.opt::before{content:"";position:absolute;left:6px;top:12px;bottom:12px;width:3px;border-radius:2px;background:transparent}
+.opt.on{background:var(--accent-soft);font-weight:700}
+.opt.on::before{background:var(--accent)}
+.opts.grid{display:grid;grid-template-columns:repeat(3,72px);gap:4px}
+.opts.grid .opt{justify-content:center;padding:0}
+.opts.grid .opt::before{display:none}
+.opts.grid .opt.on{color:var(--accent)}
+.terms{display:flex;flex-direction:column;gap:2px}
+.term{
+  display:grid;grid-template-columns:minmax(0,1fr) auto 44px;grid-template-areas:"it rng def" "zh rng def";
+  align-items:center;column-gap:14px;width:100%;
+  text-align:left;padding:8px 14px 8px 18px;border:0;border-radius:10px;background:transparent;position:relative
+}
+.term:active{background:var(--surface-2)}
+.term .it{grid-area:it;font-size:18px;line-height:1.3;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.term .zh{grid-area:zh;font-size:13px;line-height:1.3;color:var(--muted);white-space:nowrap}
+.term .rng{grid-area:rng;font-size:14px;color:var(--muted);font-variant-numeric:tabular-nums;text-align:right;white-space:nowrap}
+.term .def{grid-area:def;font-size:17px;font-weight:700;font-variant-numeric:tabular-nums;text-align:right}
+.term::before,.mk{content:"";position:absolute;left:6px;top:10px;bottom:10px;width:3px;border-radius:2px;background:transparent}
+.term.in::before,.mk.in{background:var(--mid)}
+.term.cur{background:var(--accent-soft)}
+.term.cur::before{background:var(--accent)}
+.mk{position:relative;display:inline-block;left:0;top:0;height:.9em;vertical-align:-1px;margin:0 3px}
+.src{font-size:12px;color:var(--muted);margin:8px 10px 6px;line-height:1.6}
+.src a{color:inherit}
+
+/* ---------- favourites ---------- */
+.fav-add{display:flex;gap:8px;margin-bottom:10px}
+.fav-add input{flex:1;min-width:0;height:44px;border-radius:12px;border:1px solid var(--line);background:var(--surface-2);padding:0 12px;font-size:16px}
+.fav-add button{height:44px;padding:0 16px;border-radius:12px;border:0;background:var(--ink);color:var(--bg);font-weight:600;white-space:nowrap}
+.favs{display:flex;flex-direction:column;gap:8px}
+.fav{flex:none;display:flex;align-items:stretch;border:1px solid var(--line);border-radius:12px;background:var(--surface-2);overflow:hidden}
+.fav .load{flex:1;text-align:left;border:0;background:transparent;padding:10px 12px;min-width:0}
+.fav .name{display:block;font-size:16px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.fav .meta{display:block;font-size:13px;color:var(--muted);margin-top:2px}
+.fav .del{border:0;border-left:1px solid var(--line);background:transparent;width:48px;font-size:20px;color:var(--muted)}
+.empty{font-size:14px;color:var(--muted);margin:0}
+
+/* ---------- iPad: the whole app fits on one screen; only the 我的速度 list scrolls ---------- */
+@media (min-width: 640px) and (min-height: 560px){
+  .app{height:100vh;height:100dvh}
+  .layout{flex:1;min-height:0}
+  .fav-card{display:flex;flex-direction:column;min-height:0}
+  .favs{flex:1;min-height:0;overflow:auto;-webkit-overflow-scrolling:touch;overscroll-behavior:contain}
+}
+/* portrait: metronome on top, tempo | settings side by side, list below */
+@media (min-width: 640px) and (max-width: 899px) and (min-height: 560px){
+  .layout{grid-template-columns:minmax(0,1fr) minmax(0,1fr);grid-template-rows:auto auto minmax(150px,1fr);
+          grid-template-areas:"stage stage" "tempo set" "fav fav"}
+  .picks{grid-template-columns:minmax(0,1fr)}
+}
+/* landscape / large: metronome, tempo and settings on the left, list on the right */
+@media (min-width: 900px) and (min-height: 560px){
+  .layout{grid-template-columns:minmax(0,1.05fr) minmax(0,1fr);grid-template-rows:minmax(0,1fr) auto auto;
+          grid-template-areas:"stage fav" "tempo fav" "set fav"}
+  .stage{height:auto;min-height:220px}
+  .tempo{grid-template-columns:minmax(0,2fr) minmax(0,.85fr) minmax(0,1.1fr);grid-template-areas:"bpm bpm bpm" "rng rng rng" "pre tap play"}
+}
+/* short landscape screens (iPad mini in Safari): tighter controls so the metronome keeps its size */
+@media (min-width: 900px) and (min-height: 560px) and (max-height: 700px){
+  .top{padding-bottom:6px}
+  .layout{gap:10px}
+  .card{padding:10px 12px}
+  .stage{padding:8px}
+  .bpm-row{grid-template-columns:48px 1fr 48px}
+  .step{height:48px;font-size:26px}
+  #bpmInput{font-size:52px}
+  .pick,.tap,.play{height:48px}
+  .tempo{gap:6px 8px}
+  .set{gap:6px}
+}
+@media (max-width: 420px){
+  .picks{gap:6px}
+  .pick{padding:0 6px 0 10px;column-gap:4px}
+  .pick .val{font-size:15px}
+  .pick .nicon{margin-right:3px}
+}
+</style>
+</head>
+<body>
+<div class="app">
+  <header class="top">
+    <h1>節拍器</h1>
+    <div class="seg" id="viewSeg">
+      <button data-view="pendulum">鐘擺</button>
+      <button data-view="lights">光點</button>
+    </div>
+  </header>
+
+  <div class="layout">
+      <section class="card stage">
+        <div class="visual" id="visual">
+          <canvas id="pend" aria-label="鐘擺"></canvas>
+          <div class="dots" id="dots"></div>
+        </div>
+        <div class="hint-row">
+          <p class="hint">點圓點切換重音：大＝強、中＝中、小＝弱、虛線＝靜音</p>
+          <button class="reset" id="accReset" aria-label="重音全部重設為中">重設（全部為中）</button>
+        </div>
+      </section>
+
+      <section class="card tempo">
+        <div class="bpm-row">
+          <button class="step" id="minus" aria-label="減速">−</button>
+          <div class="bpm-box">
+            <span class="unit" id="unit">♩ =</span>
+            <input id="bpmInput" type="text" inputmode="numeric" pattern="[0-9]*" enterkeyhint="done" autocomplete="off" aria-label="BPM，點一下可直接輸入">
+          </div>
+          <button class="step" id="plus" aria-label="加速">+</button>
+        </div>
+        <input type="range" id="bpmRange" min="20" max="300" step="1" aria-label="速度滑桿">
+        <div class="menu preset" id="preset">
+          <button class="pick" aria-haspopup="listbox" aria-expanded="false">
+            <span class="cap">常用速度</span><span class="val" id="presetVal"></span><span class="chev" aria-hidden="true"></span>
+          </button>
+          <div class="menu-panel" hidden>
+            <div class="terms" id="terms" role="listbox" aria-label="常用速度"></div>
+            <p class="src">點選即套用最右欄的代表速度。中間是大略的 BPM 區間（彼此重疊），左側<span class="mk in"></span>表示目前速度落在該區間內。實際速度仍以樂譜為準。<br>資料：Wikipedia〈<a href="https://en.wikipedia.org/wiki/Tempo#Basic_tempo_markings" target="_blank" rel="noopener">Tempo – Basic tempo markings</a>〉</p>
+          </div>
+        </div>
+        <button class="tap" id="tapBtn">Tap 測速</button>
+        <button class="play" id="playBtn"><span class="ico"></span><span id="playTxt">開始</span></button>
+      </section>
+
+      <section class="card set">
+        <div class="picks">
+          <div class="menu" id="meterMenu">
+            <button class="pick" aria-haspopup="listbox" aria-expanded="false">
+              <span class="cap">拍號</span><span class="val"></span><span class="chev" aria-hidden="true"></span>
+            </button>
+            <div class="menu-panel" hidden><div class="opts grid" role="listbox" aria-label="拍號"></div></div>
+          </div>
+          <div class="menu" id="subMenu">
+            <button class="pick" aria-haspopup="listbox" aria-expanded="false">
+              <span class="cap">細分拍</span><span class="val"></span><span class="chev" aria-hidden="true"></span>
+            </button>
+            <div class="menu-panel" hidden><div class="opts" role="listbox" aria-label="細分拍"></div></div>
+          </div>
+          <div class="menu" id="soundMenu">
+            <button class="pick" aria-haspopup="listbox" aria-expanded="false">
+              <span class="cap">音色</span><span class="val"></span><span class="chev" aria-hidden="true"></span>
+            </button>
+            <div class="menu-panel" hidden><div class="opts" role="listbox" aria-label="音色"></div></div>
+          </div>
+        </div>
+        <div class="vol"><span class="vol-cap">音量</span><input type="range" id="vol" min="0" max="100" step="1" aria-label="音量"><span id="volTxt"></span></div>
+      </section>
+
+      <section class="card fav-card">
+        <h2>我的速度</h2>
+        <div class="fav-add">
+          <input id="favName" type="text" placeholder="名稱（選填），例如：小奏鳴曲 第一樂章" autocomplete="off" enterkeyhint="done">
+          <button id="favSave">＋ 儲存</button>
+        </div>
+        <div class="favs" id="favs"></div>
+      </section>
+  </div>
+</div>
+
+<script>
+'use strict';
+/* ================= data ================= */
+const MIN_BPM = 20, MAX_BPM = 300;
+
+// BPM ranges: Wikipedia "Tempo – Basic tempo markings" (very rough, overlapping).
+// def = representative tempo applied when the term is tapped.
+const TERMS = [
+  {it:'Larghissimo',      zh:'最緩板',       lo:0,   hi:24,  def:20,  rng:'≤ 24'},
+  {it:'Grave',            zh:'莊板',         lo:24,  hi:40,  def:32},
+  {it:'Largo',            zh:'廣板',         lo:40,  hi:66,  def:46},
+  {it:'Lento',            zh:'緩板',         lo:40,  hi:60,  def:52},
+  {it:'Larghetto',        zh:'小廣板',       lo:44,  hi:66,  def:58},
+  {it:'Adagio',           zh:'慢板',         lo:44,  hi:66,  def:63},
+  {it:'Adagietto',        zh:'小慢板',       lo:46,  hi:80,  def:72},
+  {it:'Marcia moderato',  zh:'中速進行曲',   lo:66,  hi:80,  def:76},
+  {it:'Andante',          zh:'行板',         lo:56,  hi:108, def:84},
+  {it:'Andantino',        zh:'小行板',       lo:80,  hi:108, def:92},
+  {it:'Andante moderato', zh:'中庸的行板',   lo:80,  hi:108, def:100},
+  {it:'Moderato',         zh:'中板',         lo:108, hi:120, def:112},
+  {it:'Allegretto',       zh:'小快板',       lo:112, hi:120, def:116},
+  {it:'Allegro moderato', zh:'中庸的快板',   lo:116, hi:120, def:118},
+  {it:'Allegro',          zh:'快板',         lo:120, hi:156, def:138},
+  {it:'Molto allegro',    zh:'甚快板',       lo:124, hi:156, def:144},
+  {it:'Vivace',           zh:'活潑的快板',   lo:156, hi:176, def:160},
+  {it:'Vivacissimo',      zh:'極活潑的快板', lo:172, hi:176, def:174},
+  {it:'Presto',           zh:'急板',         lo:168, hi:200, def:184},
+  {it:'Prestissimo',      zh:'最急板',       lo:200, hi:Infinity, def:208, rng:'≥ 200'},
+];
+
+// accent levels: 3 strong, 2 medium, 1 weak, 0 mute
+const METERS = {
+  '1/4':{unit:4, acc:[1]},
+  '2/4':{unit:4, acc:[3,1]},
+  '3/4':{unit:4, acc:[3,1,1]},
+  '4/4':{unit:4, acc:[3,1,1,1]},
+  '5/4':{unit:4, acc:[3,1,1,2,1]},
+  '6/8':{unit:8, acc:[3,1,1,2,1,1]},
+  '7/8':{unit:8, acc:[3,1,2,1,2,1,1]},
+  '9/8':{unit:8, acc:[3,1,1,2,1,1,2,1,1]},
+  '12/8':{unit:8, acc:[3,1,1,2,1,1,2,1,1,2,1,1]},
+};
+// beamed-note icon: count heads, number of beams, optional triplet "3"
+function noteIcon(count, beams, tri){
+  const gap = 9, x0 = 4, sx = 2.6, w = x0 * 2 + gap * (count - 1) + 2;
+  let s = `<svg class="nicon" viewBox="0 -7 ${w} 32" height="24" width="${(w * 24 / 32).toFixed(1)}" aria-hidden="true">`;
+  for(let i = 0; i < count; i++){
+    const x = x0 + i * gap;
+    s += `<ellipse cx="${x}" cy="21" rx="3.7" ry="2.6" transform="rotate(-22 ${x} 21)"/><rect x="${x + sx}" y="4" width="1.5" height="17"/>`;
+  }
+  const b0 = x0 + sx, b1 = x0 + (count - 1) * gap + sx + 1.5;
+  for(let k = 0; k < beams; k++) s += `<rect x="${b0}" y="${4 + k * 4.6}" width="${b1 - b0}" height="3"/>`;
+  if(tri) s += `<text x="${(b0 + b1) / 2}" y="1.2" font-size="9.5" font-weight="700" text-anchor="middle">3</text>`;
+  return s + '</svg>';
+}
+const SUBS = [
+  {n:1, label:'無',     icon:noteIcon(1, 0)},
+  {n:2, label:'八分',   icon:noteIcon(2, 1)},
+  {n:3, label:'三連音', icon:noteIcon(3, 1, true)},
+  {n:4, label:'十六分', icon:noteIcon(4, 2)},
+];
+const SOUNDS = [
+  {id:'wood',    label:'木魚'},
+  {id:'click',   label:'電子'},
+  {id:'beep',    label:'嗶聲'},
+  {id:'cowbell', label:'牛鈴'},
+];
+const LEVEL_NAME = ['靜','弱','中','強'];
+
+/* ================= storage ================= */
+const store = {
+  get(k, d){ try{ const v = localStorage.getItem(k); return v == null ? d : JSON.parse(v); }catch(e){ return d; } },
+  set(k, v){ try{ localStorage.setItem(k, JSON.stringify(v)); }catch(e){} },
+};
+const S = Object.assign({bpm:100, meter:'4/4', accents:null, subdiv:1, sound:'wood', volume:80, view:'pendulum'},
+                        store.get('metronome.settings', {}) || {});
+if(!METERS[S.meter]) S.meter = '4/4';
+if(!Array.isArray(S.accents) || S.accents.length !== METERS[S.meter].acc.length) S.accents = METERS[S.meter].acc.slice();
+if(!SUBS.some(s => s.n === S.subdiv)) S.subdiv = 1;
+if(!SOUNDS.some(s => s.id === S.sound)) S.sound = 'wood';
+S.bpm = clampBpm(S.bpm);
+let favs = store.get('metronome.favs', []);
+if(!Array.isArray(favs)) favs = [];
+let saveTimer = 0;
+function save(){ clearTimeout(saveTimer); saveTimer = setTimeout(() => store.set('metronome.settings', S), 250); }
+
+function clampBpm(v){ v = Math.round(Number(v)); if(!isFinite(v)) return 100; return Math.min(MAX_BPM, Math.max(MIN_BPM, v)); }
+function termFor(bpm){
+  let best = null, bestD = Infinity;
+  for(const t of TERMS){
+    if(bpm < t.lo || bpm > t.hi) continue;
+    const d = Math.abs(bpm - t.def);
+    if(d < bestD){ bestD = d; best = t; }
+  }
+  return best;
+}
+
+/* ================= audio ================= */
+let ctx = null, master = null, bus = null, noiseBuf = null;
+function ensureAudio(){
+  if(ctx) return ctx;
+  try{ if(navigator.audioSession) navigator.audioSession.type = 'playback'; }catch(e){}   // iOS: ignore the silent switch
+  const AC = window.AudioContext || window.webkitAudioContext;
+  try{ ctx = new AC({latencyHint:'interactive'}); }catch(e){ ctx = new AC(); }
+  const comp = ctx.createDynamicsCompressor();          // soft limiter so loud clicks never clip
+  comp.threshold.value = -4; comp.knee.value = 2; comp.ratio.value = 12; comp.attack.value = 0.001; comp.release.value = 0.05;
+  master = ctx.createGain(); master.gain.value = volGain(S.volume);
+  master.connect(comp); comp.connect(ctx.destination);
+  const len = Math.floor(ctx.sampleRate * 0.05);
+  noiseBuf = ctx.createBuffer(1, len, ctx.sampleRate);
+  const d = noiseBuf.getChannelData(0);
+  for(let i = 0; i < len; i++) d[i] = Math.random() * 2 - 1;
+  // unlock on iOS: play one silent sample inside the user gesture
+  const s = ctx.createBufferSource(); s.buffer = ctx.createBuffer(1, 1, ctx.sampleRate); s.connect(ctx.destination); s.start(0);
+  return ctx;
+}
+function volGain(v){ const x = v / 100; return x * x; }
+function newBus(){ bus = ctx.createGain(); bus.connect(master); return bus; }
+
+function env(g, t, peak, decay){
+  g.gain.setValueAtTime(0.0001, t);
+  g.gain.exponentialRampToValueAtTime(Math.max(peak, 0.0002), t + 0.0015);
+  g.gain.exponentialRampToValueAtTime(0.0001, t + decay);
+}
+const AMP = {acc:1, mid:0.78, norm:0.6, sub:0.34};
+const VOICES = {
+  wood(t, lv, out){
+    const f = {acc:1320, mid:1110, norm:960, sub:780}[lv], a = AMP[lv];
+    const o = ctx.createOscillator(); o.type = 'sine';
+    o.frequency.setValueAtTime(f * 1.3, t); o.frequency.exponentialRampToValueAtTime(f, t + 0.01);
+    const g = ctx.createGain(); env(g, t, a * 0.9, 0.07);
+    o.connect(g); g.connect(out); o.start(t); o.stop(t + 0.09);
+    const n = ctx.createBufferSource(); n.buffer = noiseBuf;
+    const bp = ctx.createBiquadFilter(); bp.type = 'bandpass'; bp.frequency.value = f * 2.4; bp.Q.value = 2.5;
+    const ng = ctx.createGain(); env(ng, t, a * 0.7, 0.018);
+    n.connect(bp); bp.connect(ng); ng.connect(out); n.start(t); n.stop(t + 0.03);
+  },
+  click(t, lv, out){
+    const f = {acc:2500, mid:2050, norm:1750, sub:1350}[lv], a = AMP[lv];
+    const o = ctx.createOscillator(); o.type = 'square'; o.frequency.value = f;
+    const lp = ctx.createBiquadFilter(); lp.type = 'lowpass'; lp.frequency.value = 7000;
+    const g = ctx.createGain(); env(g, t, a * 0.35, 0.028);
+    o.connect(lp); lp.connect(g); g.connect(out); o.start(t); o.stop(t + 0.04);
+  },
+  beep(t, lv, out){
+    const f = {acc:1760, mid:1320, norm:1047, sub:784}[lv], a = AMP[lv];
+    const o = ctx.createOscillator(); o.type = 'sine'; o.frequency.value = f;
+    const g = ctx.createGain();
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.exponentialRampToValueAtTime(a * 0.75, t + 0.003);
+    g.gain.setValueAtTime(a * 0.75, t + 0.05);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + 0.12);
+    o.connect(g); g.connect(out); o.start(t); o.stop(t + 0.13);
+  },
+  cowbell(t, lv, out){
+    const f = {acc:800, mid:690, norm:587, sub:480}[lv], a = AMP[lv];
+    const bp = ctx.createBiquadFilter(); bp.type = 'bandpass'; bp.frequency.value = f * 1.9; bp.Q.value = 1.4;
+    const g = ctx.createGain(); env(g, t, a * 0.6, 0.22);
+    bp.connect(g); g.connect(out);
+    for(const m of [1, 1.48]){
+      const o = ctx.createOscillator(); o.type = 'square'; o.frequency.value = f * m;
+      o.connect(bp); o.start(t); o.stop(t + 0.24);
+    }
+  },
+};
+function voice(t, lv, out){ (VOICES[S.sound] || VOICES.wood)(t, lv, out || bus || master); }
+const LV_KEY = [null, 'norm', 'mid', 'acc'];
+
+/* ================= scheduler =================
+   Sounds are queued on the AudioContext clock a little ahead of time, so the
+   beat is timed by the audio hardware, not by JavaScript timers. */
+const LOOKAHEAD = 0.2;    // seconds of audio scheduled in advance (survives brief main-thread stalls)
+let playing = false, nextTime = 0, beatIdx = 0, subIdx = 0, beatCount = 0;
+let events = [];          // scheduled beats for the visuals: {time, beat, level, n, dur}
+const stats = {late:0, resync:0, maxLate:0};
+
+let worker = null, fallbackTimer = 0;
+try{
+  const src = 'let id=0;onmessage=e=>{clearInterval(id);if(e.data==="start")id=setInterval(()=>postMessage(0),20)}';
+  worker = new Worker(URL.createObjectURL(new Blob([src], {type:'text/javascript'})));
+  worker.onmessage = schedule;
+}catch(e){ worker = null; }
+
+function schedule(){
+  if(!playing || !ctx) return;
+  const now = ctx.currentTime;
+  if(nextTime < now - 0.05){        // came back from background / suspension: resync, no burst of catch-up clicks
+    nextTime = now + 0.05; stats.resync++;
+  }
+  while(nextTime < now + LOOKAHEAD){
+    if(nextTime < now){ stats.late++; stats.maxLate = Math.max(stats.maxLate, now - nextTime); }
+    const beatDur = 60 / S.bpm, sub = S.subdiv;
+    if(beatIdx >= S.accents.length) beatIdx = 0;
+    const lvl = S.accents[beatIdx];
+    if(subIdx === 0){
+      if(lvl > 0) voice(nextTime, LV_KEY[lvl]);
+      events.push({time:nextTime, beat:beatIdx, level:lvl, n:beatCount, dur:beatDur});
+      if(events.length > 48) events.splice(0, events.length - 48);
+    }else if(lvl > 0){
+      voice(nextTime, 'sub');
+    }
+    nextTime += beatDur / sub;
+    if(++subIdx >= sub){ subIdx = 0; beatIdx = (beatIdx + 1) % S.accents.length; beatCount++; }
+  }
+}
+
+async function start(){
+  ensureAudio();
+  const resumed = ctx.state === 'running' ? null : ctx.resume();
+  newBus();
+  playing = true; beatIdx = 0; subIdx = 0; beatCount = 0; events = [];
+  if(resumed){ try{ await resumed; }catch(e){} }
+  if(!playing) return;
+  nextTime = ctx.currentTime + 0.08;
+  schedule();
+  if(worker) worker.postMessage('start'); else { clearInterval(fallbackTimer); fallbackTimer = setInterval(schedule, 20); }
+  requestWake();
+  renderTransport();
+}
+function stop(){
+  playing = false;
+  if(worker) worker.postMessage('stop'); else clearInterval(fallbackTimer);
+  if(bus && ctx){                     // silence anything already queued
+    const b = bus; b.gain.setValueAtTime(0, ctx.currentTime);
+    setTimeout(() => { try{ b.disconnect(); }catch(e){} }, 400);
+    bus = null;
+  }
+  events = [];
+  releaseWake();
+  renderTransport();
+  needsDraw = true;
+}
+function toggle(){ playing ? stop() : start(); }
+
+/* audio time currently coming out of the speaker */
+function audioNow(){
+  let t = ctx.currentTime;
+  const lat = ctx.outputLatency || ctx.baseLatency || 0;
+  let est = t - lat;
+  if(ctx.getOutputTimestamp){
+    const ts = ctx.getOutputTimestamp();
+    if(ts && ts.contextTime > 0 && ts.performanceTime > 0){
+      const v = ts.contextTime + (performance.now() - ts.performanceTime) / 1000;
+      if(Math.abs(v - t) < 0.5) est = v;
+    }
+  }
+  return est;
+}
+
+/* ================= wake lock ================= */
+let wakeLock = null;
+async function requestWake(){
+  try{
+    if('wakeLock' in navigator && document.visibilityState === 'visible' && !wakeLock){
+      wakeLock = await navigator.wakeLock.request('screen');
+      wakeLock.addEventListener('release', () => { wakeLock = null; });
+    }
+  }catch(e){ wakeLock = null; }
+}
+function releaseWake(){ try{ if(wakeLock) wakeLock.release(); }catch(e){} wakeLock = null; }
+document.addEventListener('visibilitychange', () => {
+  if(document.visibilityState === 'visible' && playing){
+    requestWake();
+    if(ctx && ctx.state !== 'running') ctx.resume().catch(() => {});
+  }
+});
+
+/* ================= UI ================= */
+const $ = id => document.getElementById(id);
+const bpmInput = $('bpmInput'), bpmRange = $('bpmRange'), presetVal = $('presetVal');
+const visual = $('visual'), dotsEl = $('dots'), canvas = $('pend');
+
+function setBpm(v){
+  S.bpm = clampBpm(v);
+  if(document.activeElement !== bpmInput) bpmInput.value = S.bpm;
+  bpmRange.value = S.bpm;
+  const t = termFor(S.bpm);
+  presetVal.innerHTML = t ? `<span class="it">${t.it}</span><span class="zh">${t.zh}</span>` : '—';
+  renderTermsState(t);
+  needsDraw = true;
+  save();
+}
+
+/* BPM number: tap to type */
+bpmInput.addEventListener('focus', () => { setTimeout(() => bpmInput.select(), 0); });
+bpmInput.addEventListener('keydown', e => {
+  if(e.key === 'Enter'){ bpmInput.blur(); }
+  else if(e.key === 'Escape'){ bpmInput.value = S.bpm; bpmInput.blur(); }
+});
+bpmInput.addEventListener('input', () => { bpmInput.value = bpmInput.value.replace(/\D/g, '').slice(0, 3); });
+bpmInput.addEventListener('blur', () => {
+  const v = parseInt(bpmInput.value, 10);
+  setBpm(isFinite(v) ? v : S.bpm);
+  bpmInput.value = S.bpm;
+});
+bpmRange.addEventListener('input', () => setBpm(bpmRange.value));
+
+/* +/- with press-and-hold repeat */
+function holdButton(el, delta){
+  let t1 = 0, t2 = 0, count = 0;
+  const end = () => { clearTimeout(t1); clearInterval(t2); };
+  el.addEventListener('pointerdown', e => {
+    e.preventDefault(); end(); count = 0;
+    setBpm(S.bpm + delta);
+    t1 = setTimeout(() => { t2 = setInterval(() => { count++; setBpm(S.bpm + delta * (count > 25 ? 2 : 1)); }, 70); }, 380);
+  });
+  ['pointerup','pointerleave','pointercancel'].forEach(n => el.addEventListener(n, end));
+  el.addEventListener('click', e => { if(e.detail === 0) setBpm(S.bpm + delta); });   // keyboard activation
+  el.addEventListener('contextmenu', e => e.preventDefault());
+}
+holdButton($('minus'), -1);
+holdButton($('plus'), +1);
+
+/* tap tempo */
+let taps = [];
+$('tapBtn').addEventListener('pointerdown', e => { e.preventDefault(); tap(); });
+$('tapBtn').addEventListener('click', e => { if(e.detail === 0) tap(); });
+function tap(){
+  const t = performance.now();
+  if(taps.length && t - taps[taps.length - 1] > 2000) taps = [];
+  taps.push(t);
+  if(taps.length > 6) taps.shift();
+  if(taps.length >= 2){
+    const iv = (taps[taps.length - 1] - taps[0]) / (taps.length - 1);
+    setBpm(60000 / iv);
+  }
+  const b = $('tapBtn'); b.classList.add('hit'); setTimeout(() => b.classList.remove('hit'), 90);
+}
+
+/* play */
+$('playBtn').addEventListener('click', toggle);
+function renderTransport(){
+  $('playBtn').classList.toggle('on', playing);
+  $('playTxt').textContent = playing ? '停止' : '開始';
+}
+
+/* view toggle */
+$('viewSeg').addEventListener('click', e => {
+  const b = e.target.closest('button'); if(!b) return;
+  S.view = b.dataset.view; renderView(); save();
+});
+function renderView(){
+  for(const b of $('viewSeg').children) b.setAttribute('aria-pressed', String(b.dataset.view === S.view));
+  visual.classList.toggle('lights', S.view === 'lights');
+  sizeDots(); needsDraw = true;
+}
+
+/* dropdown menus (常用速度, 拍號, 細分拍, 音色): open toward the side with more room, close on pick / outside tap / Esc */
+const menus = [];
+function makeMenu(id, onOpen){
+  const wrap = $(id), btn = wrap.querySelector('.pick'), panel = wrap.querySelector('.menu-panel');
+  const m = {wrap, btn, panel,
+    open(){
+      menus.forEach(o => o !== m && o.close());
+      panel.hidden = false; panel.style.maxHeight = '';
+      panel.classList.remove('end', 'up', 'down');
+      const r = btn.getBoundingClientRect(), vh = window.innerHeight;
+      const above = r.top - 12, below = vh - r.bottom - 12, need = panel.scrollHeight;
+      const down = below >= Math.min(need, 380) || below >= above;
+      panel.classList.add(down ? 'down' : 'up');
+      panel.style.maxHeight = Math.max(160, Math.min(560, down ? below : above)) + 'px';
+      if(panel.getBoundingClientRect().right > document.documentElement.clientWidth - 8) panel.classList.add('end');
+      btn.setAttribute('aria-expanded', 'true');
+      if(onOpen) onOpen();
+    },
+    close(){ if(panel.hidden) return; panel.hidden = true; btn.setAttribute('aria-expanded', 'false'); },
+  };
+  btn.addEventListener('click', () => panel.hidden ? m.open() : m.close());
+  menus.push(m);
+  return m;
+}
+document.addEventListener('pointerdown', e => menus.forEach(m => { if(!m.panel.hidden && !m.wrap.contains(e.target)) m.close(); }));
+document.addEventListener('keydown', e => {
+  if(e.key !== 'Escape') return;
+  menus.forEach(m => { if(!m.panel.hidden){ m.close(); m.btn.focus(); } });
+});
+window.addEventListener('resize', () => menus.forEach(m => m.close()));
+
+// option list inside a menu; the button shows the current choice
+function optionMenu(id, items, isOn, onPick){
+  const m = makeMenu(id);
+  const el = m.panel.querySelector('.opts'), val = m.btn.querySelector('.val');
+  items.forEach(it => {
+    const b = document.createElement('button');
+    b.className = 'opt'; b.setAttribute('role', 'option');
+    if(it.icon){ b.innerHTML = it.icon; b.append(it.label); } else b.textContent = it.label;
+    b.addEventListener('click', () => { onPick(it); render(); m.close(); });
+    el.appendChild(b);
+  });
+  const render = () => {
+    [...el.children].forEach((b, i) => { const on = isOn(items[i]); b.classList.toggle('on', on); b.setAttribute('aria-selected', String(on)); });
+    const cur = items.find(isOn);
+    val.innerHTML = cur && cur.icon ? cur.icon : '';
+    val.append(cur ? cur.label : '');
+  };
+  render();
+  return render;
+}
+const renderMeter = optionMenu('meterMenu', Object.keys(METERS).map(k => ({label:k, key:k})),
+  it => it.key === S.meter, it => setMeter(it.key));
+const renderSub = optionMenu('subMenu', SUBS, it => it.n === S.subdiv, it => { S.subdiv = it.n; save(); });
+optionMenu('soundMenu', SOUNDS, it => it.id === S.sound, it => {
+  S.sound = it.id; save();
+  if(!playing){ ensureAudio(); if(ctx.state !== 'running') ctx.resume(); voice(ctx.currentTime + 0.03, 'acc', master); }
+});
+
+function setMeter(key, accents){
+  S.meter = key;
+  S.accents = (accents && accents.length === METERS[key].acc.length) ? accents.slice() : METERS[key].acc.slice();
+  if(beatIdx >= S.accents.length) beatIdx = 0;
+  $('unit').textContent = (METERS[key].unit === 8 ? '♪︎' : '♩︎') + ' =';
+  renderDots(); renderMeter(); save();
+}
+
+/* volume */
+const vol = $('vol');
+vol.value = S.volume; $('volTxt').textContent = S.volume;
+vol.addEventListener('input', () => {
+  S.volume = +vol.value; $('volTxt').textContent = S.volume;
+  if(master) master.gain.setTargetAtTime(volGain(S.volume), ctx.currentTime, 0.01);
+  save();
+});
+
+/* beat dots (also the accent editor) */
+$('accReset').addEventListener('click', () => { S.accents = S.accents.map(() => 2); renderDots(); save(); });
+let dotEls = [];
+function renderDots(){
+  dotsEl.innerHTML = '';
+  dotEls = S.accents.map((lv, i) => {
+    const b = document.createElement('button');
+    b.className = 'dot'; b.dataset.level = lv;
+    b.setAttribute('aria-label', `第 ${i + 1} 拍：${LEVEL_NAME[lv]}（點一下切換）`);
+    b.innerHTML = `<span class="ring"><span>${i + 1}</span><span class="lv">${LEVEL_NAME[lv]}</span></span>`;
+    b.addEventListener('click', () => {
+      const nv = (S.accents[i] + 3) % 4;       // 3 → 2 → 1 → 0 → 3
+      S.accents[i] = nv; b.dataset.level = nv;
+      b.querySelector('.lv').textContent = LEVEL_NAME[nv];
+      b.setAttribute('aria-label', `第 ${i + 1} 拍：${LEVEL_NAME[nv]}（點一下切換）`);
+      save();
+    });
+    dotsEl.appendChild(b);
+    return b;
+  });
+  sizeDots();
+}
+function sizeDots(){
+  if(S.view !== 'lights') return;
+  const n = S.accents.length, perRow = n <= 6 ? n : Math.ceil(n / 2), rows = n <= 6 ? 1 : 2;
+  const w = (dotsEl.clientWidth || visual.clientWidth) - 16, h = (dotsEl.clientHeight || visual.clientHeight) - 16;
+  const gap = Math.round(Math.min(24, Math.max(10, w * 0.035)));
+  const size = Math.max(40, Math.min(170, (w - gap * (perRow - 1) - 12) / perRow, (h - gap * (rows - 1) - 12) / rows));
+  dotsEl.style.gap = gap + 'px';
+  dotsEl.style.setProperty('--ds', Math.floor(size) + 'px');
+}
+window.addEventListener('resize', () => { sizeDots(); needsDraw = true; });
+
+/* tempo terms */
+const termsEl = $('terms');
+TERMS.forEach(t => {
+  const b = document.createElement('button');
+  b.className = 'term'; b.setAttribute('role', 'option');
+  b.innerHTML = `<span class="it">${t.it}</span><span class="zh">${t.zh}</span>` +
+                `<span class="rng">${t.rng || (t.lo + '–' + t.hi)}</span><span class="def">${t.def}</span>`;
+  b.addEventListener('click', () => { setBpm(t.def); presetMenu.close(); });
+  t.el = b;
+  termsEl.appendChild(b);
+});
+function renderTermsState(cur){
+  for(const t of TERMS){
+    t.el.classList.toggle('cur', t === cur);
+    t.el.setAttribute('aria-selected', String(t === cur));
+    t.el.classList.toggle('in', t !== cur && S.bpm >= t.lo && S.bpm <= t.hi);
+  }
+}
+const presetMenu = makeMenu('preset', () => {          // scroll the current term into the middle
+  const cur = termsEl.querySelector('.term.cur'), p = presetMenu.panel;
+  if(cur) p.scrollTop = cur.offsetTop - p.clientHeight / 2 + cur.offsetHeight / 2;
+});
+
+/* favourites */
+function renderFavs(){
+  const el = $('favs'); el.innerHTML = '';
+  if(!favs.length){ el.innerHTML = '<p class="empty">還沒有儲存的速度。設定好速度、拍號後按「儲存」。</p>'; return; }
+  favs.forEach((f, i) => {
+    const t = termFor(f.bpm);
+    const sub = SUBS.find(s => s.n === f.subdiv);
+    const row = document.createElement('div'); row.className = 'fav';
+    const load = document.createElement('button'); load.className = 'load';
+    const name = document.createElement('span'); name.className = 'name'; name.textContent = f.name || (t ? t.it : f.bpm + ' BPM');
+    const meta = document.createElement('span'); meta.className = 'meta';
+    meta.textContent = `${METERS[f.meter] && METERS[f.meter].unit === 8 ? '♪' : '♩'} = ${f.bpm} · ${f.meter}` +
+                       (sub && sub.n > 1 ? ' · ' + sub.label : '') + (t ? ' · ' + t.it : '');
+    load.append(name, meta);
+    load.addEventListener('click', () => {
+      if(METERS[f.meter]) setMeter(f.meter, f.accents);
+      if(SUBS.some(s => s.n === f.subdiv)){ S.subdiv = f.subdiv; }
+      setBpm(f.bpm);
+      renderSub();
+    });
+    const del = document.createElement('button'); del.className = 'del'; del.textContent = '×';
+    del.setAttribute('aria-label', '刪除');
+    del.addEventListener('click', () => {
+      if(!confirm(`刪除「${name.textContent}」？`)) return;
+      favs.splice(i, 1); store.set('metronome.favs', favs); renderFavs();
+    });
+    row.append(load, del);
+    el.appendChild(row);
+  });
+}
+function addFav(){
+  const nm = $('favName').value.trim();
+  favs.unshift({name:nm, bpm:S.bpm, meter:S.meter, accents:S.accents.slice(), subdiv:S.subdiv});
+  store.set('metronome.favs', favs);
+  $('favName').value = ''; $('favName').blur();
+  renderFavs();
+}
+$('favSave').addEventListener('click', addFav);
+$('favName').addEventListener('keydown', e => { if(e.key === 'Enter') addFav(); });
+
+/* keyboard (external keyboard on iPad / desktop) */
+document.addEventListener('keydown', e => {
+  if(e.target.tagName === 'INPUT' && e.target.type !== 'range') return;
+  if(e.code === 'Space'){ e.preventDefault(); toggle(); }
+  else if(e.key === 'ArrowUp' || e.key === 'ArrowRight'){ e.preventDefault(); setBpm(S.bpm + 1); }
+  else if(e.key === 'ArrowDown' || e.key === 'ArrowLeft'){ e.preventDefault(); setBpm(S.bpm - 1); }
+  else if(e.key === 't' || e.key === 'T'){ tap(); }
+});
+
+/* ================= drawing ================= */
+let colors = {};
+function readColors(){
+  const cs = getComputedStyle(document.documentElement);
+  for(const k of ['wood','wood-dark','face','metal','metal-dark','shadow','accent','mid','weak','beat','ink','line'])
+    colors[k] = cs.getPropertyValue('--' + k).trim();
+  needsDraw = true;
+}
+if(window.matchMedia) matchMedia('(prefers-color-scheme: dark)').addEventListener?.('change', readColors);
+
+const MAX_ANGLE = 0.38;
+let needsDraw = true;
+// Weight position (top edge, as a fraction of rod length from the pivot), like the sliding scale of a
+// mechanical metronome: 40 near the top, 208 near the pivot, log-spaced; tempos beyond that clamp.
+const SCALE = [40,44,48,52,56,60,63,66,69,72,76,80,84,88,92,96,100,104,108,112,116,120,126,132,138,144,152,160,168,176,184,192,200,208];
+function weightFrac(bpm){
+  const f = Math.log(bpm / 40) / Math.log(208 / 40);
+  return Math.min(0.92, Math.max(0.3, 0.86 - 0.52 * f));
+}
+let weightNow = null;     // eased value actually drawn, so the weight slides instead of jumping
+
+function drawPendulum(pos, glow, glowLevel){
+  const r = canvas.getBoundingClientRect();
+  const W = Math.max(1, Math.round(r.width)), H = Math.max(1, Math.round(r.height));
+  const dpr = Math.min(window.devicePixelRatio || 1, 3);
+  if(canvas.width !== Math.round(W * dpr) || canvas.height !== Math.round(H * dpr)){
+    canvas.width = Math.round(W * dpr); canvas.height = Math.round(H * dpr);
+  }
+  const g = canvas.getContext('2d');
+  g.setTransform(dpr, 0, 0, dpr, 0, 0);
+  g.clearRect(0, 0, W, H);
+  const C = colors;
+
+  const bh = Math.min(H * 0.92, W * 1.0);
+  const bw = bh * 0.6, tw = bh * 0.15;
+  const cx = W / 2, by = (H + bh) / 2, ty = by - bh;
+  const widthAt = y => tw + (bw - tw) * (y - ty) / bh;
+
+  // shadow
+  g.fillStyle = C.shadow;
+  g.beginPath(); g.ellipse(cx, by, bw * 0.58, bh * 0.025, 0, 0, Math.PI * 2); g.fill();
+
+  // body
+  const grad = g.createLinearGradient(cx - bw / 2, 0, cx + bw / 2, 0);
+  grad.addColorStop(0, C['wood-dark']); grad.addColorStop(0.45, C.wood); grad.addColorStop(1, C['wood-dark']);
+  g.fillStyle = grad;
+  g.beginPath();
+  g.moveTo(cx - bw / 2, by); g.lineTo(cx - tw / 2, ty + bh * 0.02);
+  g.quadraticCurveTo(cx, ty - bh * 0.02, cx + tw / 2, ty + bh * 0.02);
+  g.lineTo(cx + bw / 2, by); g.closePath(); g.fill();
+
+  // face plate with scale
+  const fy1 = ty + bh * 0.07, fy2 = by - bh * 0.15;
+  const fw1 = widthAt(fy1) * 0.76, fw2 = widthAt(fy2) * 0.72;
+  g.fillStyle = C.face;
+  g.beginPath();
+  g.moveTo(cx - fw2 / 2, fy2); g.lineTo(cx - fw1 / 2, fy1); g.lineTo(cx + fw1 / 2, fy1); g.lineTo(cx + fw2 / 2, fy2);
+  g.closePath(); g.fill();
+  // tempo scale: each mark sits where the weight's top edge rests for that tempo
+  const px = cx, py = by - bh * 0.17, L = bh * 0.8;
+  const fs = Math.max(8, bh * 0.024);
+  g.strokeStyle = C['wood-dark']; g.fillStyle = C['wood-dark']; g.lineWidth = 1;
+  g.font = `600 ${fs}px -apple-system, "Segoe UI", sans-serif`; g.textBaseline = 'middle';
+  let lastLabel = -Infinity;
+  for(const v of SCALE){
+    const y = py - weightFrac(v) * L;
+    const major = v === 40 || v === 60 || v === 80 || v === 100 || v === 120 || v === 144 || v === 176 || v === 208;
+    const tl = bh * (major ? 0.03 : 0.016), gap = bh * 0.014;
+    g.globalAlpha = major ? 0.6 : 0.35;
+    g.beginPath(); g.moveTo(cx - gap - tl, y); g.lineTo(cx - gap, y); g.moveTo(cx + gap, y); g.lineTo(cx + gap + tl, y); g.stroke();
+    if(major && Math.abs(y - lastLabel) > fs * 1.3){
+      g.globalAlpha = 0.7; g.textAlign = 'left';
+      g.fillText(v, cx + gap + tl + bh * 0.008, y);
+      lastLabel = y;
+    }
+  }
+  g.globalAlpha = 1;
+
+  // base plate
+  const b1 = by - bh * 0.12;
+  g.fillStyle = C['wood-dark'];
+  g.beginPath();
+  g.moveTo(cx - bw / 2, by); g.lineTo(cx - widthAt(b1) / 2, b1); g.lineTo(cx + widthAt(b1) / 2, b1); g.lineTo(cx + bw / 2, by);
+  g.closePath(); g.fill();
+
+  // lamp
+  const lr = bh * 0.028, ly = by - bh * 0.06;
+  g.fillStyle = C.line; g.globalAlpha = 0.5;
+  g.beginPath(); g.arc(cx, ly, lr, 0, Math.PI * 2); g.fill(); g.globalAlpha = 1;
+  if(glow > 0){
+    const col = glowLevel >= 3 ? C.accent : glowLevel === 2 ? C.mid : C.beat;
+    g.save(); g.globalAlpha = glow; g.shadowColor = col; g.shadowBlur = lr * 4; g.fillStyle = col;
+    g.beginPath(); g.arc(cx, ly, lr, 0, Math.PI * 2); g.fill(); g.restore();
+  }
+
+  // pendulum rod
+  const ww = bh * 0.1, wh = bh * 0.08;
+  const wd = (weightNow == null ? weightFrac(S.bpm) : weightNow) * L - wh / 2;   // top edge on the scale mark
+  g.save();
+  g.translate(px, py); g.rotate(MAX_ANGLE * pos);
+  g.strokeStyle = C.metal; g.lineCap = 'round'; g.lineWidth = Math.max(2, bh * 0.012);
+  g.beginPath(); g.moveTo(0, bh * 0.02); g.lineTo(0, -L); g.stroke();
+  const wg = g.createLinearGradient(-ww / 2, 0, ww / 2, 0);
+  wg.addColorStop(0, C['metal-dark']); wg.addColorStop(0.5, C.metal); wg.addColorStop(1, C['metal-dark']);
+  g.fillStyle = wg;
+  g.beginPath();
+  g.moveTo(-ww * 0.36, -wd - wh / 2); g.lineTo(ww * 0.36, -wd - wh / 2);
+  g.lineTo(ww / 2, -wd + wh / 2); g.lineTo(-ww / 2, -wd + wh / 2); g.closePath(); g.fill();
+  g.restore();
+  g.fillStyle = C['metal-dark'];
+  g.beginPath(); g.arc(px, py, bh * 0.018, 0, Math.PI * 2); g.fill();
+}
+
+let litIdx = -1, curIdx = -1;
+function frame(){
+  requestAnimationFrame(frame);
+  let pos = 0, glow = 0, glowLvl = 1, cur = -1, flash = 0;
+  if(playing && ctx && events.length){
+    const now = audioNow();
+    let k = -1;
+    for(let i = events.length - 1; i >= 0; i--){ if(events[i].time <= now){ k = i; break; } }
+    if(k < 0){
+      pos = -1;                                    // waiting for the very first beat
+    }else{
+      const e = events[k], next = events[k + 1];
+      const dur = next ? next.time - e.time : e.dur;
+      const ph = Math.min(1, Math.max(0, (now - e.time) / dur));
+      pos = -Math.cos(Math.PI * (e.n + ph));       // extreme position exactly on each beat
+      const fd = Math.min(0.22, e.dur * 0.55);
+      flash = Math.max(0, 1 - (now - e.time) / fd);
+      glow = e.level > 0 ? flash : 0; glowLvl = e.level;
+      cur = e.beat;
+    }
+    needsDraw = true;
+  }else if(playing){
+    pos = -1;
+  }
+
+  // dots
+  if(cur !== curIdx){
+    if(dotEls[curIdx]){ dotEls[curIdx].classList.remove('cur', 'lit'); dotEls[curIdx].style.setProperty('--f', 0); }
+    curIdx = cur;
+  }
+  if(dotEls[cur]){
+    const d = dotEls[cur];
+    const lvl = S.accents[cur];
+    const f = lvl > 0 ? 0.25 + 0.75 * flash : 0.12;
+    d.classList.add('cur'); d.classList.toggle('lit', f > 0.5);
+    d.style.setProperty('--f', f.toFixed(3));
+  }
+
+  const wTarget = weightFrac(S.bpm);
+  if(weightNow == null) weightNow = wTarget;
+  if(Math.abs(wTarget - weightNow) > 0.0005){ weightNow += (wTarget - weightNow) * 0.22; needsDraw = true; }
+  else if(weightNow !== wTarget){ weightNow = wTarget; needsDraw = true; }
+
+  if(S.view === 'pendulum' && needsDraw){
+    if(!colors.wood) readColors();
+    drawPendulum(pos, glow, glowLvl);
+    needsDraw = playing;
+  }
+}
+
+/* ================= init ================= */
+setMeter(S.meter, S.accents);
+setBpm(S.bpm);
+renderView();
+renderTransport();
+renderFavs();
+readColors();
+requestAnimationFrame(frame);
+
+if('serviceWorker' in navigator && /^https?:$/.test(location.protocol)){
+  navigator.serviceWorker.register('sw.js').catch(() => {});
+}
+window.__metronome = {S, stats, get events(){ return events; }, get ctx(){ return ctx; }, get master(){ return master; }, start, stop};   // for debugging/tests
+</script>
+</body>
+</html>

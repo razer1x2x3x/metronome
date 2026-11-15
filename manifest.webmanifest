@@ -1,0 +1,17 @@
+{
+  "name": "節拍器",
+  "short_name": "節拍器",
+  "description": "可離線使用的節拍器：鐘擺／光點顯示、拍號、重音、細分拍、Tap 測速、常用速度。",
+  "lang": "zh-Hant",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#f4eee4",
+  "theme_color": "#f4eee4",
+  "icons": [
+    { "src": "icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}
