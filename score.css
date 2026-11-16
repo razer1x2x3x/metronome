@@ -22,7 +22,10 @@
 .sc-lib{flex:1;min-height:0;overflow:auto;-webkit-overflow-scrolling:touch;overscroll-behavior:contain;padding-bottom:8px}
 .sc-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:14px}
 .sc-piece{border:1px solid var(--line);border-radius:16px;background:var(--surface);padding:10px;text-align:left;display:flex;flex-direction:column;gap:8px;min-width:0}
+.sc-piece{cursor:pointer;position:relative}
 .sc-piece:active{background:var(--surface-2)}
+.sc-grid.editing .sc-piece{cursor:default}
+.sc-grid.editing .sc-piece:active{background:var(--surface)}
 .sc-cover{aspect-ratio:3/4;border-radius:8px;background:#fff center/contain no-repeat;border:1px solid var(--line)}
 .sc-piece .name{font-size:15px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .sc-piece .meta{font-size:12px;color:var(--muted)}
@@ -172,3 +175,32 @@
 .sc-cropbox .hd.tl{left:-24px;top:-24px}.sc-cropbox .hd.tr{right:-24px;top:-24px}
 .sc-cropbox .hd.bl{left:-24px;bottom:-24px}.sc-cropbox .hd.br{right:-24px;bottom:-24px}
 .sc-cropbox .hd.tl::after,.sc-cropbox .hd.tr::after,.sc-cropbox .hd.bl::after,.sc-cropbox .hd.br::after{left:50%;top:50%;width:18px;height:18px;margin:-9px 0 0 -9px;border-radius:50%}
+
+/* library: 整理 and backup */
+.sc-piece-acts{display:flex;gap:6px}
+.sc-piece-acts .sc-btn{flex:1;height:36px;padding:0 8px;font-size:14px}
+.sc-grid.editing .sc-cover{opacity:.75}
+.sc-backup{margin-top:16px}
+.sc-row.center{justify-content:center;margin-top:14px}
+.sc-row.center .sc-btn{height:52px;padding:0 22px;font-size:16px}
+.sc-empty .sc-row .sc-btn{margin-top:0}
+.sc-dlg{position:fixed;inset:0;z-index:95;background:rgba(0,0,0,.35);display:flex;align-items:center;justify-content:center;padding:20px}
+.sc-dlg-box{background:var(--surface);border-radius:18px;padding:20px;max-width:440px;width:100%;box-shadow:0 16px 40px var(--shadow)}
+.sc-dlg-box p{margin:0 0 16px;font-size:16px;line-height:1.6;white-space:pre-line}
+.sc-dlg-row{display:flex;justify-content:flex-end;gap:10px}
+.sc-dlg-row .sc-btn{height:46px;padding:0 22px;font-size:16px}
+
+/* notes: page + ink layers, toolbar */
+.sc-pw{position:relative;line-height:0}
+.sc-sheet canvas.ink{position:absolute;left:0;top:0;width:100%;height:100%;background:transparent;box-shadow:none;pointer-events:none}
+.sc-inkbar{display:flex;align-items:center;gap:6px;padding:6px 8px;border:1px solid var(--line);border-radius:14px;background:var(--surface);flex-wrap:wrap}
+.sc-inkbar .ib{height:40px;min-width:40px;border-radius:10px;border:1px solid var(--line);background:var(--surface-2);display:inline-flex;align-items:center;justify-content:center;padding:0 8px;font-size:15px;font-weight:600}
+.sc-inkbar .ib[aria-pressed="true"]{border-color:var(--accent);background:var(--accent-soft);color:var(--accent)}
+.sc-inkbar .ib:disabled{opacity:.35}
+.sc-inkbar .ib.txt{padding:0 12px}
+.sc-inkbar .sw{width:22px;height:22px;border-radius:50%;display:block;box-shadow:0 0 0 2px var(--surface)}
+.sc-inkbar .ib.col[aria-pressed="true"] .sw{box-shadow:0 0 0 2px var(--surface),0 0 0 4px var(--accent)}
+.sc-inkbar .ln{display:block;width:22px;background:currentColor;border-radius:3px}
+.sc-inkbar .ln.s{height:2px}.sc-inkbar .ln.l{height:5px}
+.sc-inkbar .sep{width:1px;height:26px;background:var(--line);margin:0 2px}
+.sc-inkbar .sp{flex:1}

@@ -30,7 +30,7 @@ const DB = (() => {
   function open(){
     if(dbp) return dbp;
     dbp = new Promise((res, rej) => {
-      const r = indexedDB.open('score', 2);
+      const r = indexedDB.open('score', 3);
       r.onupgradeneeded = e => {
         const d = r.result;
         if(e.oldVersion < 1){
@@ -40,6 +40,7 @@ const DB = (() => {
         }
         const fs = r.transaction.objectStore('files');
         if(!fs.indexNames.contains('pieceId')) fs.createIndex('pieceId', 'pieceId');
+        if(!d.objectStoreNames.contains('ink')) d.createObjectStore('ink');
       };
       r.onsuccess = () => { const d = r.result; d.onversionchange = () => d.close(); res(d); };
       r.onerror = () => { dbp = null; rej(r.error); };
@@ -59,7 +60,8 @@ const DB = (() => {
 })();
 
 /* ---------- settings ---------- */
-const SET = Object.assign({autoFlip:false, flipAt:'beat', countIn:1, keys:false, mini:true, mode:'browse', strip:true},
+const SET = Object.assign({autoFlip:false, flipAt:'beat', countIn:1, keys:false, mini:true, mode:'browse', strip:true,
+                           inkShow:true, fingerInk:false, inkTool:'pen', inkColor:'#d0312d', inkSize:'s'},
                           local.get('score.settings', {}) || {});
 const saveSet = () => local.set('score.settings', SET);
 const UI = Object.assign({tab:'metro', piece:null}, local.get('score.ui', {}) || {});
@@ -282,6 +284,7 @@ async function deletePiece(p){
     await DB.delRange('thumbs', id + ':', id + ':\uffff').catch(() => {});
     await DB.del('files', id).catch(() => {});
   }
+  for(const pg of p.pages) await DB.del('ink', pg.id).catch(() => {});
   await DB.del('pieces', p.id);
   pieces = pieces.filter(x => x !== p);
 }
@@ -299,6 +302,7 @@ root.innerHTML = `
       <span class="meter" id="scMeter"></span>
       <div class="sc-mdots" id="scDots"></div>
     </div>
+    <div id="scInkSlot"></div>
     <div class="sc-stage" id="scStage">
       <div class="sc-sheet" id="scSheet"></div>
       <div class="sc-msg" id="scMsg"></div>
@@ -318,7 +322,7 @@ function busy(t){ $('scBusy').hidden = !t; if(t) $('scBusyTxt').textContent = t;
 
 /* ---------- state ---------- */
 let tab = 'metro', cur = null, mode = SET.mode === 'perform' ? 'perform' : 'browse', pi = 0, si = 0;
-let editorOpen = false;
+let editorOpen = false, libEdit = false;
 
 /* ---------- tabs ---------- */
 function setTab(t){
@@ -340,14 +344,18 @@ function renderTools(){
   tools.innerHTML = '';
   if(editorOpen){ tools.append(gearBtn()); return; }
   if(!cur){
+    const org = h('button', 'sc-btn' + (libEdit ? ' primary' : ''), libEdit ? '完成' : '整理');
+    org.addEventListener('click', () => { libEdit = !libEdit; renderTools(); renderLib(); });
     const imp = h('button', 'sc-btn primary', '＋ 匯入樂譜'); imp.addEventListener('click', () => pickFiles(null));
-    tools.append(imp, gearBtn());
+    if(pieces.length) tools.append(org);
+    if(!libEdit) tools.append(imp);
+    tools.append(gearBtn());
     return;
   }
   const back = h('button', 'sc-btn', '‹ 曲庫'); back.addEventListener('click', closePiece);
   const title = h('div', 'sc-title'); title.textContent = cur.name;
   const seg = h('div', 'seg sc-mode');
-  for(const [m, l] of [['browse', '看譜'], ['perform', '演奏']]){
+  for(const [m, l] of [['browse', '看譜'], ['perform', '演奏'], ['note', '筆記']]){
     const b = h('button', null, l); b.dataset.mode = m; b.setAttribute('aria-pressed', String(mode === m));
     b.addEventListener('click', () => setMode(m));
     seg.appendChild(b);
@@ -366,18 +374,22 @@ function gearBtn(){
 
 /* ---------- library ---------- */
 async function loadPieces(){ pieces = await DB.all('pieces').catch(() => []); }
+const LIB_NOTE = '樂譜只存在這台 iPad 裡，不會上傳到網路。刪除主畫面的 App 或清除 Safari 網站資料時，樂譜和筆記也會一起消失，請定期用「匯出整個曲庫」備份。';
 function renderLib(){
   libEl.innerHTML = '';
   if(!pieces.length){
+    libEdit = false;
     libEl.innerHTML = `<div class="sc-empty"><p>還沒有樂譜。<br>可以一次選多個 PDF 或圖片（例如手機拍的照片），之後再調整頁面順序。</p></div>`;
     const b = h('button', 'sc-btn primary', '＋ 匯入樂譜'); b.addEventListener('click', () => pickFiles(null));
-    libEl.firstChild.appendChild(b);
-    libEl.firstChild.appendChild(h('p', 'sc-note', '樂譜只存在這台 iPad 裡，不會上傳到網路。刪除主畫面的 App 或清除 Safari 網站資料時，樂譜也會一起消失，請保留原始檔。'));
+    const r = h('button', 'sc-btn', '從備份檔還原'); r.addEventListener('click', pickBackup);
+    const row = h('div', 'sc-row center'); row.append(b, r);
+    libEl.firstChild.appendChild(row);
+    libEl.firstChild.appendChild(h('p', 'sc-note', LIB_NOTE));
     return;
   }
-  const grid = h('div', 'sc-grid');
+  const grid = h('div', 'sc-grid' + (libEdit ? ' editing' : ''));
   for(const p of [...pieces].sort((a, b) => (b.opened || 0) - (a.opened || 0))){
-    const b = h('button', 'sc-piece');
+    const b = h('div', 'sc-piece'); b.setAttribute('role', 'button'); b.tabIndex = 0;
     const cover = h('div', 'sc-cover');
     if(p.pages[0]) setThumb(cover, p.pages[0]);
     const name = h('div', 'name'); name.textContent = p.name;
@@ -385,11 +397,38 @@ function renderLib(){
     meta.textContent = `${p.pages.length} 頁` + (p.steps ? ` · 演奏順序 ${steps(p).length} 步` : '') +
                        (p.tempo ? ` · ${p.tempo.bpm} BPM ${p.tempo.meter}` : '');
     b.append(cover, name, meta);
-    b.addEventListener('click', () => openPiece(p.id));
+    if(libEdit){
+      const acts = h('div', 'sc-piece-acts');
+      const rn = h('button', 'sc-btn', '重新命名'), del = h('button', 'sc-btn danger', '刪除');
+      rn.addEventListener('click', e => {
+        e.stopPropagation();
+        const v = prompt('曲名', p.name);
+        if(v != null && v.trim()){ p.name = v.trim(); savePiece(p); renderLib(); }
+      });
+      del.addEventListener('click', async e => {
+        e.stopPropagation();
+        if(!confirm(`刪除「${p.name}」？\n這首曲子的頁面和筆記都會從這台 iPad 刪除，無法復原。`)) return;
+        await deletePiece(p);
+        if(!pieces.length) libEdit = false;
+        renderTools(); renderLib();
+      });
+      acts.append(rn, del);
+      b.appendChild(acts);
+    }else{
+      b.addEventListener('click', () => openPiece(p.id));
+      b.addEventListener('keydown', e => { if(e.key === 'Enter') openPiece(p.id); });
+    }
     grid.appendChild(b);
   }
   libEl.appendChild(grid);
-  libEl.appendChild(h('p', 'sc-note', '樂譜只存在這台 iPad 裡，不會上傳到網路。刪除主畫面的 App 或清除 Safari 網站資料時，樂譜也會一起消失，請保留原始檔。'));
+  const bk = h('section', 'card sc-backup');
+  bk.innerHTML = '<h2>備份</h2><p class="sc-help">把所有曲子（含頁面、裁切、演奏順序、筆記）存成一個備份檔，放到「檔案」App 或 iCloud 雲碟。換 iPad 或重裝 App 時，用「從備份檔還原」匯入回來。</p>';
+  const row = h('div', 'sc-row');
+  const ex = h('button', 'sc-btn', '匯出整個曲庫'); ex.addEventListener('click', () => exportBackup([...pieces], '樂譜備份'));
+  const im = h('button', 'sc-btn', '從備份檔還原'); im.addEventListener('click', pickBackup);
+  row.append(ex, im); bk.appendChild(row);
+  libEl.appendChild(bk);
+  libEl.appendChild(h('p', 'sc-note', LIB_NOTE));
   showUsage();
 }
 function showUsage(){
@@ -409,6 +448,7 @@ async function openPiece(id){
   const p = pieces.find(x => x.id === id);
   if(!p) return;
   if(cur && cur !== p) closePiece(true);
+  libEdit = false;
   cur = p; UI.piece = id; saveUI();
   p.opened = Date.now(); savePiece(p);
   const st = steps(p);
@@ -424,7 +464,7 @@ async function openPiece(id){
 function closePiece(keepView){
   if(!cur) return;
   savePiece(cur, true);
-  clearPages(); dropDocs();
+  clearPages(); dropDocs(); dropInk();
   cur = null; UI.piece = null; saveUI();
   if(keepView === true) return;
   closeEditor(true);
@@ -440,7 +480,8 @@ function applyTempo(t){
 /* ---------- reader chrome ---------- */
 function renderReaderChrome(){
   miniEl.hidden = !SET.mini;
-  stripEl.hidden = !(mode === 'browse' && SET.strip && cur && cur.pages.length > 1);
+  stripEl.hidden = !(mode !== 'perform' && SET.strip && cur && cur.pages.length > 1);
+  renderInkBar();
   readerEl.classList.toggle('strip', !stripEl.hidden);
   stage.classList.toggle('perform', mode === 'perform');
 }
@@ -453,10 +494,10 @@ function setMode(m){
     resetZoom();
     if(playing) AF.startN = nearestDownbeat();
     const z = $('scZones'); z.classList.add('show'); setTimeout(() => z.classList.remove('show'), 1600);
-  }else{
+  }else if(mode === 'perform'){
     const s = st[si]; if(s){ const k = pageNo(cur, s.pid) - 1; if(k >= 0) pi = k; }
   }
-  mode = m; SET.mode = m; saveSet();
+  mode = m; SET.mode = m === 'note' ? 'browse' : m; saveSet();
   renderTools(); renderReaderChrome(); renderStrip(); show();
 }
 
@@ -505,7 +546,7 @@ function trimCache(keep){
     const k = [...pageCache.keys()].find(x => !keep.has(x));
     if(!k) break;
     const e = pageCache.get(k); pageCache.delete(k);
-    if(e.c && e.c.parentNode !== sheet) freeCanvas(e.c);
+    if(e.c && e.c.parentNode !== pw) freeCanvas(e.c);
   }
 }
 function clearPages(){
@@ -516,7 +557,9 @@ function clearPages(){
 }
 function mount(c, dpr){
   c.style.width = (c.width / dpr) + 'px'; c.style.height = (c.height / dpr) + 'px';
-  if(sheet.firstChild !== c || sheet.childNodes.length !== 1) sheet.replaceChildren(c);
+  if(pw.firstChild !== c || pw.childNodes.length !== 2) pw.replaceChildren(c, inkC);
+  if(sheet.firstChild !== pw || sheet.childNodes.length !== 1) sheet.replaceChildren(pw);
+  drawInk();
 }
 let showToken = 0;
 function show(){
@@ -529,6 +572,7 @@ function show(){
   msgEl.textContent = '';
   const {dpr, W, H} = stageSize();
   if(stage.clientWidth < 20 || stage.clientHeight < 20) return;
+  loadInk(pg.id).then(() => { if(tok === showToken) drawInk(); });
   const e = getCanvas(pg, true);
   if(e.c) mount(e.c, dpr);
   else{
@@ -619,6 +663,232 @@ function markStrip(){
   }
 }
 
+/* ================= 筆記 (handwritten notes) =================
+   Strokes are stored per page in IndexedDB ('ink', key = page id), in the page's own coordinates: 0–1 across
+   the page as imported, before the user's rotation and crop. So a note stays next to the same notes when the
+   page is rotated or cropped later.
+   stroke = {t:'pen'|'hl', c:colour, w:width (fraction of the page size), p:[u, v, pressure, u, v, pressure, …]} */
+const INK_COLORS = [['#d0312d', '紅'], ['#1f5bd6', '藍'], ['#1b1b1b', '黑']];
+const HL_COLOR = '#ffd400';
+const INK_W = {s:0.0026, l:0.0055, hl:0.016};
+const inkMem = new Map();      // pid → Promise<strokes[]>
+const inkArr = new Map();      // pid → strokes[] (loaded)
+const inkPending = new Map();  // pid → timer for a save not yet written
+function loadInk(pid){
+  if(!inkMem.has(pid)) inkMem.set(pid, DB.get('ink', pid).then(r => (r && r.s) || []).catch(() => []).then(a => {
+    if(!inkArr.has(pid)) inkArr.set(pid, a);
+    return inkArr.get(pid);
+  }));
+  return inkMem.get(pid);
+}
+function writeInk(pid){
+  const a = inkArr.get(pid) || [];
+  return (a.length ? DB.put('ink', {s:a}, pid) : DB.del('ink', pid)).catch(e => console.error(e));
+}
+function saveInk(pid){
+  clearTimeout(inkPending.get(pid));
+  inkPending.set(pid, setTimeout(() => { inkPending.delete(pid); writeInk(pid); }, 400));
+}
+function flushInk(){
+  const all = [];
+  for(const [pid, t] of inkPending){ clearTimeout(t); all.push(writeInk(pid)); }
+  inkPending.clear();
+  return Promise.all(all);
+}
+function dropInk(){ flushInk(); inkMem.clear(); inkArr.clear(); undoS.length = 0; redoS.length = 0; live = null; }
+
+/* page coordinates (u, v) ↔ pixels on a W × H surface showing the page rotated and cropped */
+function inkXf(pg, W, H){
+  const c = pg.crop || {l:0, t:0, r:0, b:0};
+  const fw = Math.max(0.05, 1 - c.l - c.r), fh = Math.max(0.05, 1 - c.t - c.b);
+  const FW = W / fw, FH = H / fh, rot = pg.rot || 0;
+  return {
+    unit:Math.sqrt(FW * FH),
+    to(u, v){
+      let x = u, y = v;
+      if(rot === 90){ x = 1 - v; y = u; } else if(rot === 180){ x = 1 - u; y = 1 - v; } else if(rot === 270){ x = v; y = 1 - u; }
+      return [(x - c.l) * FW, (y - c.t) * FH];
+    },
+    from(px, py){
+      const x = px / FW + c.l, y = py / FH + c.t;
+      if(rot === 90) return [y, 1 - x];
+      if(rot === 180) return [1 - x, 1 - y];
+      if(rot === 270) return [1 - y, x];
+      return [x, y];
+    },
+  };
+}
+const penW = (s, X, p) => s.w * X.unit * (0.35 + 0.9 * p);
+function paintStroke(g, s, X){
+  const P = s.p, n = P.length / 3; if(!n) return;
+  g.lineCap = 'round'; g.lineJoin = 'round'; g.strokeStyle = s.c; g.fillStyle = s.c;
+  if(s.t === 'hl'){
+    g.save(); g.globalAlpha = 0.35; g.lineWidth = s.w * X.unit;
+    g.beginPath();
+    let [x, y] = X.to(P[0], P[1]); g.moveTo(x, y);
+    if(n === 1) g.lineTo(x + 0.1, y);
+    for(let i = 3; i < P.length; i += 3){ [x, y] = X.to(P[i], P[i + 1]); g.lineTo(x, y); }
+    g.stroke(); g.restore();
+    return;
+  }
+  if(n === 1){ const [x, y] = X.to(P[0], P[1]); g.beginPath(); g.arc(x, y, penW(s, X, P[2]) / 2, 0, Math.PI * 2); g.fill(); return; }
+  let [x0, y0] = X.to(P[0], P[1]), p0 = P[2];
+  for(let i = 3; i < P.length; i += 3){
+    const [x1, y1] = X.to(P[i], P[i + 1]), p1 = P[i + 2];
+    g.lineWidth = penW(s, X, (p0 + p1) / 2);
+    g.beginPath(); g.moveTo(x0, y0); g.lineTo(x1, y1); g.stroke();
+    x0 = x1; y0 = y1; p0 = p1;
+  }
+}
+
+/* the page canvas and the ink canvas on top of it share one wrapper, so zooming moves both */
+const pw = h('div', 'sc-pw'), inkC = h('canvas', 'ink');
+let live = null;               // stroke being drawn / erasing: {pid, id, X, erase, s, removed}
+const inkVisible = () => SET.inkShow !== false || mode === 'note';
+function drawInk(){
+  const pg = curPage(), base = pw.firstChild;
+  if(!pg || !base || base === inkC || !pw.isConnected){ return; }
+  const cssW = parseFloat(base.style.width) || 0, cssH = parseFloat(base.style.height) || 0;
+  if(!cssW || !cssH) return;
+  const k = stageSize().dpr * Math.min(3, Math.max(1, Z.s));
+  let W = Math.round(cssW * k), H = Math.round(cssH * k);
+  if(W * H > MAX_PIX / 2){ const f = Math.sqrt(MAX_PIX / 2 / (W * H)); W = Math.round(W * f); H = Math.round(H * f); }
+  if(inkC.width !== W || inkC.height !== H){ inkC.width = W; inkC.height = H; }
+  const g = inkC.getContext('2d'); g.clearRect(0, 0, W, H);
+  const strokes = inkArr.get(pg.id);
+  if(!strokes){ loadInk(pg.id).then(() => { if(curPage() === pg) drawInk(); }); return; }
+  if(!inkVisible()) return;
+  const X = inkXf(pg, W, H);
+  for(const s of strokes) if(s.t === 'hl') paintStroke(g, s, X);
+  if(live && live.s && live.s.t === 'hl' && live.pid === pg.id) paintStroke(g, live.s, X);
+  for(const s of strokes) if(s.t !== 'hl') paintStroke(g, s, X);
+  if(live && live.s && live.s.t !== 'hl' && live.pid === pg.id) paintStroke(g, live.s, X);
+}
+
+/* input: Apple Pencil writes; fingers keep turning pages and zooming (unless 手指也能寫字 is on) */
+let lastPenAt = 0;
+const inkInput = e => mode === 'note' && (e.pointerType === 'pen' || e.pointerType === 'mouse' || (SET.fingerInk && e.pointerType === 'touch'));
+const r4 = v => Math.round(v * 1e4) / 1e4;
+function surfacePt(e){
+  const r = inkC.getBoundingClientRect();
+  return [(e.clientX - r.left) / r.width * inkC.width, (e.clientY - r.top) / r.height * inkC.height];
+}
+function inkStart(e){
+  const pg = curPage();
+  if(!pg || !inkArr.has(pg.id) || !pw.isConnected || !inkC.width) return false;
+  const X = inkXf(pg, inkC.width, inkC.height), [fx, fy] = surfacePt(e);
+  lastPenAt = performance.now();
+  if(SET.inkTool === 'eraser'){
+    live = {pid:pg.id, id:e.pointerId, X, erase:true, removed:[]};
+    eraseAt(fx, fy);
+    return true;
+  }
+  const hl = SET.inkTool === 'hl', [u, v] = X.from(fx, fy);
+  live = {pid:pg.id, id:e.pointerId, X, s:{t:hl ? 'hl' : 'pen', c:hl ? HL_COLOR : SET.inkColor, w:hl ? INK_W.hl : INK_W[SET.inkSize] || INK_W.s, p:[r4(u), r4(v), pressure(e)]}};
+  drawInk();
+  return true;
+}
+const pressure = e => e.pointerType === 'pen' && e.pressure > 0 ? Math.round(e.pressure * 100) / 100 : 0.5;
+function inkMove(e){
+  if(!live || e.pointerId !== live.id) return;
+  lastPenAt = performance.now();
+  let evs = e.getCoalescedEvents ? e.getCoalescedEvents() : null;
+  if(!evs || !evs.length) evs = [e];
+  const g = inkC.getContext('2d');
+  for(const ev of evs){
+    const [fx, fy] = surfacePt(ev);
+    if(live.erase){ eraseAt(fx, fy); continue; }
+    const P = live.s.p, [u, v] = live.X.from(fx, fy);
+    const lu = P[P.length - 3], lv = P[P.length - 2];
+    if(Math.hypot(u - lu, v - lv) < 0.0007) continue;
+    P.push(r4(u), r4(v), pressure(ev));
+    if(live.s.t === 'pen'){                     // draw just the new piece
+      const n = P.length;
+      const [x0, y0] = live.X.to(P[n - 6], P[n - 5]), [x1, y1] = live.X.to(P[n - 3], P[n - 2]);
+      g.lineCap = 'round'; g.strokeStyle = live.s.c; g.lineWidth = penW(live.s, live.X, (P[n - 4] + P[n - 1]) / 2);
+      g.beginPath(); g.moveTo(x0, y0); g.lineTo(x1, y1); g.stroke();
+    }
+  }
+  if(live.s && live.s.t === 'hl') drawInk();
+}
+function inkEnd(e){
+  if(!live || e.pointerId !== live.id) return;
+  const L = live; live = null; lastPenAt = performance.now();
+  const arr = inkArr.get(L.pid); if(!arr) return;
+  if(L.erase){ if(L.removed.length) pushUndo({pid:L.pid, kind:'del', items:L.removed}); }
+  else{ arr.push(L.s); pushUndo({pid:L.pid, kind:'add', s:L.s}); }
+  saveInk(L.pid); drawInk();
+}
+function eraseAt(fx, fy){
+  const arr = inkArr.get(live.pid); if(!arr) return;
+  const rr = 12 * (inkC.width / (inkC.getBoundingClientRect().width || 1));
+  let hit = false;
+  for(let i = arr.length - 1; i >= 0; i--){
+    const s = arr[i], P = s.p, half = s.w * live.X.unit / 2;
+    for(let j = 0; j < P.length; j += 3){
+      const [x, y] = live.X.to(P[j], P[j + 1]);
+      if(Math.hypot(x - fx, y - fy) < rr + half){
+        // remember where it was, in the original order, so 復原 can put it back
+        live.removed.push({s, i});
+        arr.splice(i, 1); hit = true; break;
+      }
+    }
+  }
+  if(hit) drawInk();
+}
+
+/* 復原 / 重做 */
+const undoS = [], redoS = [];
+function pushUndo(op){ undoS.push(op); if(undoS.length > 300) undoS.shift(); redoS.length = 0; renderInkBar(); }
+function runOp(op, undo){
+  const arr = inkArr.get(op.pid); if(!arr) return;
+  if(op.kind === 'add'){
+    if(undo){ const k = arr.lastIndexOf(op.s); if(k >= 0) arr.splice(k, 1); } else arr.push(op.s);
+  }else if(op.kind === 'del'){
+    if(undo){ for(let j = op.items.length - 1; j >= 0; j--){ const it = op.items[j]; arr.splice(Math.min(it.i, arr.length), 0, it.s); } }
+    else{ for(const it of op.items){ const k = arr.indexOf(it.s); if(k >= 0) arr.splice(k, 1); } }
+  }else if(op.kind === 'clear'){
+    if(undo) arr.push(...op.items); else arr.length = 0;
+  }
+  saveInk(op.pid);
+  const k = cur ? cur.pages.findIndex(x => x.id === op.pid) : -1;      // show the page that changed
+  if(k >= 0 && mode !== 'perform' && k !== pi){ pi = k; resetZoom(); show(); } else drawInk();
+  renderInkBar();
+}
+function undoInk(){ const op = undoS.pop(); if(op){ redoS.push(op); runOp(op, true); } }
+function redoInk(){ const op = redoS.pop(); if(op){ undoS.push(op); runOp(op, false); } }
+function clearPageInk(){
+  const pg = curPage(), arr = pg && inkArr.get(pg.id);
+  if(!arr || !arr.length) return;
+  if(!confirm('清除這一頁的所有筆記？（可以按「復原」救回來）')) return;
+  pushUndo({pid:pg.id, kind:'clear', items:arr.slice()});
+  arr.length = 0; saveInk(pg.id); drawInk();
+}
+
+/* toolbar (筆記 mode) */
+const inkBar = h('div', 'sc-inkbar'); inkBar.id = 'scInk';
+function renderInkBar(){
+  if(mode !== 'note'){ inkBar.hidden = true; return; }
+  inkBar.hidden = false;
+  const t = SET.inkTool;
+  inkBar.innerHTML = '';
+  const btn = (html, lab, on, fn, cls) => { const b = h('button', 'ib' + (cls ? ' ' + cls : ''), html); b.setAttribute('aria-label', lab); b.setAttribute('aria-pressed', String(!!on)); b.addEventListener('click', fn); inkBar.appendChild(b); return b; };
+  for(const [c, n] of INK_COLORS){
+    btn(`<span class="sw" style="background:${c}"></span>`, n + '筆', t === 'pen' && SET.inkColor === c, () => { SET.inkTool = 'pen'; SET.inkColor = c; saveSet(); renderInkBar(); }, 'col');
+  }
+  inkBar.appendChild(h('span', 'sep'));
+  btn('<span class="ln s"></span>', '細', SET.inkSize === 's', () => { SET.inkSize = 's'; if(SET.inkTool !== 'pen') SET.inkTool = 'pen'; saveSet(); renderInkBar(); });
+  btn('<span class="ln l"></span>', '粗', SET.inkSize === 'l', () => { SET.inkSize = 'l'; if(SET.inkTool !== 'pen') SET.inkTool = 'pen'; saveSet(); renderInkBar(); });
+  inkBar.appendChild(h('span', 'sep'));
+  btn('螢光筆', '螢光筆', t === 'hl', () => { SET.inkTool = 'hl'; saveSet(); renderInkBar(); }, 'txt');
+  btn('橡皮擦', '橡皮擦', t === 'eraser', () => { SET.inkTool = 'eraser'; saveSet(); renderInkBar(); }, 'txt');
+  inkBar.appendChild(h('span', 'sep'));
+  const u = btn('↶', '復原', false, undoInk); u.disabled = !undoS.length;
+  const r = btn('↷', '重做', false, redoInk); r.disabled = !redoS.length;
+  inkBar.appendChild(h('span', 'sp'));
+  btn('清除這頁', '清除這一頁的筆記', false, clearPageInk, 'txt');
+}
+
 /* ---------- touch: tap / swipe / pinch ---------- */
 const Z = {s:1, x:0, y:0};
 function applyZoom(){ sheet.style.transform = Z.s === 1 ? '' : `translate(${Z.x}px,${Z.y}px) scale(${Z.s})`; }
@@ -652,7 +922,8 @@ function sharpen(){        // after zooming, re-render the page at the zoomed re
       const base = getCanvas(pg, false).c;
       const bw = base ? base.width / dpr : c.width / dpr / s, bh = base ? base.height / dpr : c.height / dpr / s;
       c.style.width = bw + 'px'; c.style.height = bh + 'px';
-      const old = hires; hires = c; sheet.replaceChildren(c); if(old) freeCanvas(old);
+      const old = hires; hires = c; pw.replaceChildren(c, inkC); if(sheet.firstChild !== pw) sheet.replaceChildren(pw); if(old) freeCanvas(old);
+      drawInk();
     }).catch(() => {});
   }, 250);
 }
@@ -662,6 +933,12 @@ let G = null, lastTap = {t:0, x:0, y:0};
 stage.addEventListener('gesturestart', e => e.preventDefault());
 stage.addEventListener('pointerdown', e => {
   if(!cur) return;
+  if(inkInput(e)){
+    if(live) return;
+    try{ stage.setPointerCapture(e.pointerId); }catch(err){}
+    inkStart(e); e.preventDefault(); return;
+  }
+  if(mode === 'note' && e.pointerType === 'touch' && (live || performance.now() - lastPenAt < 600)) return;   // palm while writing
   try{ stage.setPointerCapture(e.pointerId); }catch(err){}
   ptrs.set(e.pointerId, {x:e.clientX, y:e.clientY});
   const r = stage.getBoundingClientRect();
@@ -669,7 +946,7 @@ stage.addEventListener('pointerdown', e => {
     G = {x0:e.clientX, y0:e.clientY, t0:performance.now(), multi:false, zx:Z.x, zy:Z.y, r};
   }else if(ptrs.size === 2 && G){
     G.multi = true;
-    if(mode === 'browse'){
+    if(mode !== 'perform'){
       const [a, b] = [...ptrs.values()];
       G.pinch = {d0:Math.hypot(a.x - b.x, a.y - b.y) || 1, s0:Z.s, x0:Z.x, y0:Z.y,
                  mx:(a.x + b.x) / 2 - r.left, my:(a.y + b.y) / 2 - r.top};
@@ -677,9 +954,10 @@ stage.addEventListener('pointerdown', e => {
   }
 });
 stage.addEventListener('pointermove', e => {
+  if(live && e.pointerId === live.id){ inkMove(e); return; }
   if(!ptrs.has(e.pointerId) || !G) return;
   ptrs.set(e.pointerId, {x:e.clientX, y:e.clientY});
-  if(mode !== 'browse') return;
+  if(mode === 'perform') return;
   if(G.pinch && ptrs.size >= 2){
     const [a, b] = [...ptrs.values()], P = G.pinch;
     const s = Math.min(5, Math.max(0.8, P.s0 * Math.hypot(a.x - b.x, a.y - b.y) / P.d0));
@@ -692,10 +970,11 @@ stage.addEventListener('pointermove', e => {
   }
 });
 function endPointer(e){
+  if(live && e.pointerId === live.id){ inkEnd(e); return; }
   if(!ptrs.has(e.pointerId)) return;
   const p = ptrs.get(e.pointerId); ptrs.delete(e.pointerId);
   if(!G) return;
-  if(G.pinch){ if(ptrs.size < 2){ G.pinch = null; clampZoom(); sharpen(); } if(!ptrs.size) G = null; return; }
+  if(G.pinch){ if(ptrs.size < 2){ G.pinch = null; clampZoom(); sharpen(); drawInk(); } if(!ptrs.size) G = null; return; }
   if(ptrs.size) return;
   const g = G; G = null;
   if(g.multi || e.type === 'pointercancel') return;
@@ -708,7 +987,8 @@ function endPointer(e){
     else if(tapped) go(p.x - g.r.left < g.r.width * 0.2 ? -1 : 1);
     return;
   }
-  // 看譜
+  // 看譜 / 筆記
+  if(mode === 'note' && lastPenAt > g.t0 - 300) return;          // the pen was used during this touch: it was a palm
   if(Z.s > 1.03){
     if(tapped && dt < 300 && performance.now() - lastTap.t < 320){ resetZoom(); lastTap.t = 0; }
     else if(tapped) lastTap = {t:performance.now(), x:p.x, y:p.y};
@@ -838,12 +1118,18 @@ function openPop(){
     </div>
     <hr>
     <label class="sc-chk"><input type="checkbox" id="spKeys" ${SET.keys ? 'checked' : ''}>鍵盤／藍牙踏板翻頁</label>
-    <p>開啟後在翻譜頁：→ ↓ PageDown 下一頁，← ↑ PageUp 上一頁（這時方向鍵不再調整速度）。空白鍵仍是節拍器開始／停止。</p>`;
+    <p>開啟後在翻譜頁：→ ↓ PageDown 下一頁，← ↑ PageUp 上一頁（這時方向鍵不再調整速度）。空白鍵仍是節拍器開始／停止。</p>
+    <hr>
+    <label class="sc-chk"><input type="checkbox" id="spInk" ${SET.inkShow !== false ? 'checked' : ''}>看譜、演奏時顯示筆記</label>
+    <label class="sc-chk"><input type="checkbox" id="spFinger" ${SET.fingerInk ? 'checked' : ''}>手指也能寫字</label>
+    <p>預設只有 Apple Pencil 會寫字，手指在「筆記」模式裡照樣可以滑動翻頁、雙指縮放，手掌碰到螢幕也不會畫出線。</p>`;
   $('spAt').value = SET.flipAt; $('spCount').value = String(SET.countIn);
   $('spAuto').addEventListener('change', e => { SET.autoFlip = e.target.checked; saveSet(); popEl.classList.toggle('off', !SET.autoFlip); if(editorOpen) renderEditor(); });
   $('spAt').addEventListener('change', e => { SET.flipAt = e.target.value; saveSet(); });
   $('spCount').addEventListener('change', e => { SET.countIn = +e.target.value; saveSet(); });
   $('spKeys').addEventListener('change', e => { SET.keys = e.target.checked; saveSet(); });
+  $('spInk').addEventListener('change', e => { SET.inkShow = e.target.checked; saveSet(); drawInk(); });
+  $('spFinger').addEventListener('change', e => { SET.fingerInk = e.target.checked; saveSet(); });
 }
 function closePop(){ popEl.hidden = true; }
 document.addEventListener('pointerdown', e => { if(!popEl.hidden && !popEl.contains(e.target) && !e.target.closest('.score-tools')) closePop(); });
@@ -905,7 +1191,10 @@ function renderEditor(){
         <p class="sc-help" style="margin:10px 0 0">記住之後，每次打開這首曲子，節拍器會自動換成這個速度、拍號、重音和細分拍。</p>
       </section>
       <section class="card">
-        <div class="sc-row"><span class="txt">刪除這首曲子和它的所有頁面。</span><button class="sc-btn danger" id="edDelete">刪除曲子</button></div>
+        <div class="sc-row"><span class="txt">把這首曲子（含頁面、設定、筆記）存成備份檔。</span><button class="sc-btn" id="edExport">匯出這首曲子</button></div>
+      </section>
+      <section class="card">
+        <div class="sc-row"><span class="txt">刪除這首曲子和它的所有頁面、筆記。</span><button class="sc-btn danger" id="edDelete">刪除曲子</button></div>
       </section>
     </div>`;
   const nameIn = $('edName'); nameIn.value = p.name;
@@ -920,6 +1209,7 @@ function renderEditor(){
   $('edClear').addEventListener('click', () => { setSteps(p, null); renderOrder(true); });
   $('edTempoSave').addEventListener('click', () => { p.tempo = {bpm:S.bpm, meter:S.meter, accents:S.accents.slice(), subdiv:S.subdiv}; savePiece(p); renderTempo(); });
   $('edTempoClear').addEventListener('click', () => { p.tempo = null; savePiece(p); renderTempo(); });
+  $('edExport').addEventListener('click', () => exportBackup([p], p.name));
   $('edDelete').addEventListener('click', async () => {
     if(!confirm(`刪除「${p.name}」？\n這首曲子的所有頁面都會從這台 iPad 刪除，無法復原。`)) return;
     const victim = p;
@@ -1027,6 +1317,7 @@ function renderPages(){
       mk('✕', '刪除這一頁', () => {
         if(!confirm(`刪除第 ${k + 1} 頁？`)) return;
         p.pages.splice(k, 1);
+        DB.del('ink', pg.id).catch(() => {}); inkArr.delete(pg.id); inkMem.delete(pg.id);
         if(p.steps) p.steps = p.steps.filter(s => s.pid !== pg.id);
         if(p.steps && !p.steps.length) p.steps = null;
         savePiece(p); renderPages(); renderOrder(true);
@@ -1278,9 +1569,124 @@ let pvResize = 0;
 window.addEventListener('resize', () => { if(!pvEl.hidden){ clearTimeout(pvResize); pvResize = setTimeout(renderPreview, 150); } });
 document.addEventListener('contextmenu', e => { if(drag || e.target.closest('.sc-pg') || e.target.closest('.sc-stage')) e.preventDefault(); });
 
+/* ================= 備份 (backup to a file, restore from it) =================
+   One .mtbk file: "MTBK" + version (uint32 LE) + header length (uint32 LE) + header JSON + the original files.
+   header = {app, v, created, pieces:[piece records], files:[{id, pieceId, name, type, kind, count, off, len}], ink:{pid:strokes}} */
+function dialog(msg, buttons){
+  const d = h('div', 'sc-dlg'), box = h('div', 'sc-dlg-box'), p = h('p'), row = h('div', 'sc-dlg-row');
+  p.textContent = msg; box.append(p, row); d.appendChild(box);
+  for(const b of buttons){
+    const el = h('button', 'sc-btn' + (b.primary ? ' primary' : ''), esc(b.label));
+    el.addEventListener('click', () => { d.remove(); if(b.run) b.run(); });
+    row.appendChild(el);
+  }
+  document.body.appendChild(d);
+}
+const fmtSize = n => n >= 1073741824 ? (n / 1073741824).toFixed(1) + ' GB' : n >= 1048576 ? (n / 1048576).toFixed(1) + ' MB' : Math.max(1, Math.round(n / 1024)) + ' KB';
+const ymd = () => { const d = new Date(); return `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, '0')}${String(d.getDate()).padStart(2, '0')}`; };
+
+async function buildBackup(list){
+  await flushInk();
+  for(const p of list) await savePiece(p, true);
+  const files = [], parts = [], ink = {};
+  let off = 0;
+  for(let i = 0; i < list.length; i++){
+    const p = list[i];
+    busy(`準備備份… ${i + 1} / ${list.length}`);
+    for(const id of [...new Set(p.pages.map(x => x.file))]){
+      const f = await DB.get('files', id).catch(() => null);
+      if(!f) continue;
+      files.push({id:f.id, pieceId:p.id, name:f.name, type:f.type, kind:f.kind, count:f.count, off, len:f.data.byteLength});
+      parts.push(new Blob([f.data])); off += f.data.byteLength;
+    }
+    for(const pg of p.pages){
+      const r = await DB.get('ink', pg.id).catch(() => null);
+      if(r && r.s && r.s.length) ink[pg.id] = r.s;
+    }
+  }
+  const head = new TextEncoder().encode(JSON.stringify({app:'metronome-score', v:1, created:new Date().toISOString(), pieces:list, files, ink}));
+  const pre = new Uint8Array(12), dv = new DataView(pre.buffer);
+  pre.set([77, 84, 66, 75]); dv.setUint32(4, 1, true); dv.setUint32(8, head.length, true);
+  return new Blob([pre, head, ...parts], {type:'application/octet-stream'});
+}
+async function exportBackup(list, name){
+  if(!list.length) return;
+  let blob;
+  try{ blob = await buildBackup(list); }
+  catch(e){ console.error(e); alert('備份失敗：' + (e && e.message || e)); return; }
+  finally{ busy(null); }
+  const file = new File([blob], `${name.replace(/[\\/:*?"<>|]/g, '_')}-${ymd()}.mtbk`, {type:'application/octet-stream'});
+  dialog(`備份檔已準備好（${list.length} 首，${fmtSize(blob.size)}）。\n按「儲存」後選「儲存到檔案」，存到 iCloud 雲碟或「我的 iPad」。`,
+    [{label:'取消'}, {label:'儲存', primary:true, run:() => saveFile(file)}]);
+}
+function saveFile(file){
+  try{
+    if(navigator.canShare && navigator.canShare({files:[file]})){
+      navigator.share({files:[file]}).catch(e => { if(!e || e.name !== 'AbortError') download(file); });
+      return;
+    }
+  }catch(e){}
+  download(file);
+}
+function download(file){
+  const u = URL.createObjectURL(file), a = h('a');
+  a.href = u; a.download = file.name; document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(u), 60000);
+}
+
+const bkInput = h('input'); bkInput.type = 'file'; bkInput.style.display = 'none';   // no accept filter: iPadOS would grey out .mtbk
+document.body.appendChild(bkInput);
+bkInput.addEventListener('change', () => { const f = bkInput.files[0]; bkInput.value = ''; if(f) importBackup(f); });
+function pickBackup(){ bkInput.value = ''; bkInput.click(); }
+
+async function importBackup(file){
+  let H, base;
+  try{
+    const dv = new DataView(await file.slice(0, 12).arrayBuffer());
+    if(file.size < 12 || dv.getUint32(0, false) !== 0x4D54424B) throw new Error('not a backup');
+    const hl = dv.getUint32(8, true);
+    H = JSON.parse(new TextDecoder().decode(await file.slice(12, 12 + hl).arrayBuffer()));
+    base = 12 + hl;
+    if(!H || H.app !== 'metronome-score' || !Array.isArray(H.pieces)) throw new Error('not a backup');
+  }catch(e){ alert('這不是樂譜的備份檔（.mtbk）。'); return 0; }
+  const dup = H.pieces.filter(p => pieces.some(x => x.id === p.id));
+  let replace = false;
+  if(dup.length) replace = confirm(`備份裡有 ${dup.length} 首曲子已經在曲庫裡。\n\n按「確定」：用備份取代它們（頁面、設定、筆記都換成備份裡的）。\n按「取消」：保留原本的，備份另外加成新的一份。`);
+  let n = 0;
+  try{
+    for(const P0 of H.pieces){
+      busy(`匯入備份… ${n + 1} / ${H.pieces.length}`);
+      const exists = pieces.find(x => x.id === P0.id);
+      const copy = !!exists && !replace;
+      if(exists && replace){ if(cur && cur.id === exists.id) closePiece(); await deletePiece(exists); }
+      const P = JSON.parse(JSON.stringify(P0)), fmap = {}, pmap = {};
+      if(copy){ P.id = uid(); P.name = P0.name + '（副本）'; }
+      for(const f of H.files.filter(f => f.pieceId === P0.id)){
+        const id = copy ? uid() : f.id; fmap[f.id] = id;
+        const data = await file.slice(base + f.off, base + f.off + f.len).arrayBuffer();
+        await DB.put('files', {id, pieceId:P.id, name:f.name, type:f.type, kind:f.kind, count:f.count, data});
+      }
+      P.pages = (P.pages || []).map(pg => { const id = copy ? uid() : pg.id; pmap[pg.id] = id; return Object.assign({}, pg, {id, file:fmap[pg.file] || pg.file}); });
+      if(P.steps) P.steps = P.steps.map(s => Object.assign({}, s, {pid:pmap[s.pid] || s.pid}));
+      if(P.pageBars){ const nb = {}; for(const k in P.pageBars) nb[pmap[k] || k] = P.pageBars[k]; P.pageBars = nb; }
+      for(const old in pmap){ const s = H.ink && H.ink[old]; if(s && s.length) await DB.put('ink', {s}, pmap[old]); }
+      P.opened = Date.now();
+      await DB.put('pieces', P);
+      pieces.push(P); n++;
+    }
+  }catch(e){ console.error(e); alert('匯入時發生錯誤：' + (e && e.message || e) + `\n已匯入 ${n} 首。`); }
+  finally{ busy(null); }
+  try{ if(navigator.storage && navigator.storage.persist) navigator.storage.persist(); }catch(e){}
+  if(!cur) renderLib();
+  if(n) note2(`已從備份匯入 ${n} 首曲子`);
+  return n;
+}
+function note2(t){ dialog(t, [{label:'好', primary:true}]); }
+
 /* ================= init ================= */
 (async () => {
   renderMini();
+  $('scInkSlot').replaceWith(inkBar);
   await loadPieces();
   renderLib(); renderTools();
   if(UI.piece && pieces.some(p => p.id === UI.piece)) await openPiece(UI.piece);
@@ -1288,7 +1694,7 @@ document.addEventListener('contextmenu', e => { if(drag || e.target.closest('.sc
   requestAnimationFrame(frame2);
 })();
 
-window.__score = {importFiles, openPiece, closePiece, parseOrder, setMode, go, steps, openEditor, closeEditor,
+window.__score = {importFiles, openPiece, buildBackup, importBackup, exportBackup, inkArr, undoInk, redoInk, get undoN(){ return undoS.length; }, closePiece, parseOrder, setMode, go, steps, openEditor, closeEditor,
   get mem(){ return {files:fileCache.size, urls:urlCache.size, pages:pageCache.size}; }, get pvCrop(){ return pvCrop; },
   get cur(){ return cur; }, get state(){ return {mode, pi, si, tab, af:{...AF}, cache:pageCache.size}; }, SET, AF};
 })();
