@@ -30,14 +30,18 @@ const DB = (() => {
   function open(){
     if(dbp) return dbp;
     dbp = new Promise((res, rej) => {
-      const r = indexedDB.open('score', 1);
-      r.onupgradeneeded = () => {
+      const r = indexedDB.open('score', 2);
+      r.onupgradeneeded = e => {
         const d = r.result;
-        d.createObjectStore('pieces', {keyPath:'id'});
-        d.createObjectStore('files', {keyPath:'id'});
-        d.createObjectStore('thumbs');
+        if(e.oldVersion < 1){
+          d.createObjectStore('pieces', {keyPath:'id'});
+          d.createObjectStore('files', {keyPath:'id'});
+          d.createObjectStore('thumbs');
+        }
+        const fs = r.transaction.objectStore('files');
+        if(!fs.indexNames.contains('pieceId')) fs.createIndex('pieceId', 'pieceId');
       };
-      r.onsuccess = () => res(r.result);
+      r.onsuccess = () => { const d = r.result; d.onversionchange = () => d.close(); res(d); };
       r.onerror = () => { dbp = null; rej(r.error); };
     });
     return dbp;
@@ -49,6 +53,8 @@ const DB = (() => {
     async all(s){ const d = await open(); return req(d.transaction(s).objectStore(s).getAll()); },
     async put(s, v, k){ const d = await open(); const t = d.transaction(s, 'readwrite'); k === undefined ? t.objectStore(s).put(v) : t.objectStore(s).put(v, k); return done(t); },
     async del(s, k){ const d = await open(); const t = d.transaction(s, 'readwrite'); t.objectStore(s).delete(k); return done(t); },
+    async delRange(s, lo, hi){ const d = await open(); const t = d.transaction(s, 'readwrite'); t.objectStore(s).delete(IDBKeyRange.bound(lo, hi)); return done(t); },
+    async fileIdsOf(pieceId){ const d = await open(); return req(d.transaction('files').objectStore('files').index('pieceId').getAllKeys(pieceId)); },
   };
 })();
 
@@ -82,7 +88,17 @@ async function openPdf(buf){
 const fileCache = new Map();    // id → Promise<file record>
 const docCache = new Map();     // id → Promise<PDFDocumentProxy>
 const urlCache = new Map();     // image file id → object URL
-const getFile = id => { if(!fileCache.has(id)) fileCache.set(id, DB.get('files', id)); return fileCache.get(id); };
+const FILE_MEM = 6;             // file records (with their data) kept in memory; older ones are dropped
+function getFile(id){
+  let p = fileCache.get(id);
+  if(p){ fileCache.delete(id); fileCache.set(id, p); return p; }       // most recently used last
+  p = DB.get('files', id); fileCache.set(id, p);
+  while(fileCache.size > FILE_MEM){
+    const old = fileCache.keys().next().value; fileCache.delete(old);
+    const u = urlCache.get(old); if(u){ URL.revokeObjectURL(u); urlCache.delete(old); }
+  }
+  return p;
+}
 function getDoc(f){ if(!docCache.has(f.id)) docCache.set(f.id, openPdf(f.data)); return docCache.get(f.id); }
 function imgURL(f){ if(!urlCache.has(f.id)) urlCache.set(f.id, URL.createObjectURL(new Blob([f.data], {type:f.type || 'image/jpeg'}))); return urlCache.get(f.id); }
 function loadImg(src){
@@ -98,34 +114,42 @@ function dropDocs(){
 
 /* draw one page into a new canvas that fits inside maxW × maxH device pixels */
 const MAX_PIX = 16e6;          // iOS canvas limit is ~16.7 MP
-async function drawPage(pg, maxW, maxH){
+const cropSig = pg => pg.crop ? `:c${pg.crop.l},${pg.crop.t},${pg.crop.r},${pg.crop.b}` : '';
+async function drawPage(pg, maxW, maxH, nocrop){
   const f = await getFile(pg.file);
   if(!f) throw new Error('missing file');
   const c = document.createElement('canvas');
+  const cr = !nocrop && pg.crop ? pg.crop : {l:0, t:0, r:0, b:0};
+  const fw = Math.max(0.05, 1 - cr.l - cr.r), fh = Math.max(0.05, 1 - cr.t - cr.b);
   if(f.kind === 'pdf'){
     const doc = await getDoc(f);
     const page = await doc.getPage(pg.n);
     const rotation = ((page.rotate || 0) + pg.rot) % 360;
     const v1 = page.getViewport({scale:1, rotation});
-    let s = Math.min(maxW / v1.width, maxH / v1.height);
-    if(v1.width * v1.height * s * s > MAX_PIX) s = Math.sqrt(MAX_PIX / (v1.width * v1.height));
+    const cw = v1.width * fw, ch = v1.height * fh;
+    let s = Math.min(maxW / cw, maxH / ch);
+    if(cw * ch * s * s > MAX_PIX) s = Math.sqrt(MAX_PIX / (cw * ch));
     const vp = page.getViewport({scale:s, rotation});
-    c.width = Math.max(1, Math.floor(vp.width)); c.height = Math.max(1, Math.floor(vp.height));
+    c.width = Math.max(1, Math.floor(vp.width * fw)); c.height = Math.max(1, Math.floor(vp.height * fh));
     const g = c.getContext('2d');
     g.fillStyle = '#fff'; g.fillRect(0, 0, c.width, c.height);
-    await page.render({canvasContext:g, viewport:vp}).promise;
+    const job = {canvasContext:g, viewport:vp};
+    if(cr.l || cr.t) job.transform = [1, 0, 0, 1, -vp.width * cr.l, -vp.height * cr.t];
+    await page.render(job).promise;
     page.cleanup();
   }else{
     const img = await loadImg(imgURL(f));
     const iw = img.naturalWidth, ih = img.naturalHeight, side = pg.rot % 180 !== 0;
     const w0 = side ? ih : iw, h0 = side ? iw : ih;
-    let s = Math.min(maxW / w0, maxH / h0);
-    if(w0 * h0 * s * s > MAX_PIX) s = Math.sqrt(MAX_PIX / (w0 * h0));
-    c.width = Math.max(1, Math.round(w0 * s)); c.height = Math.max(1, Math.round(h0 * s));
+    const cw = w0 * fw, ch = h0 * fh;
+    let s = Math.min(maxW / cw, maxH / ch);
+    if(cw * ch * s * s > MAX_PIX) s = Math.sqrt(MAX_PIX / (cw * ch));
+    c.width = Math.max(1, Math.round(cw * s)); c.height = Math.max(1, Math.round(ch * s));
     const g = c.getContext('2d');
     g.fillStyle = '#fff'; g.fillRect(0, 0, c.width, c.height);
     g.imageSmoothingQuality = 'high';
-    g.translate(c.width / 2, c.height / 2); g.rotate(pg.rot * Math.PI / 180);
+    g.translate(-cr.l * w0 * s, -cr.t * h0 * s);
+    g.translate(w0 * s / 2, h0 * s / 2); g.rotate(pg.rot * Math.PI / 180);
     g.drawImage(img, -iw * s / 2, -ih * s / 2, iw * s, ih * s);
   }
   return c;
@@ -146,7 +170,7 @@ async function pump(){
 
 /* thumbnails (cached in IndexedDB) */
 const thumbMem = new Map();     // key → Promise<url>
-const thumbKey = pg => `${pg.file}:${pg.n}:${pg.rot}`;
+const thumbKey = pg => `${pg.file}:${pg.n}:${pg.rot}` + cropSig(pg);
 function thumb(pg){
   const k = thumbKey(pg);
   if(!thumbMem.has(k)){
@@ -239,7 +263,6 @@ async function importFiles(list, piece){
         }
       }catch(e){ skipped.push(f.name); continue; }
       await DB.put('files', rec);
-      fileCache.set(rec.id, Promise.resolve(rec));
       for(let n = 1; n <= rec.count; n++) added.push({id:uid(), file:rec.id, name:f.name, n, of:rec.count, rot:0});
     }
   }finally{ busy(null); }
@@ -254,11 +277,9 @@ async function importFiles(list, piece){
 
 async function deletePiece(p){
   const files = new Set(p.pages.map(x => x.file));
-  const all = await DB.all('files').catch(() => []);
-  for(const f of all) if(f.pieceId === p.id) files.add(f.id);
+  for(const id of await DB.fileIdsOf(p.id).catch(() => [])) files.add(id);
   for(const id of files){
-    const f = all.find(x => x.id === id);
-    for(let n = 1; n <= (f ? f.count : 1); n++) for(const r of [0, 90, 180, 270]) DB.del('thumbs', `${id}:${n}:${r}`).catch(() => {});
+    await DB.delRange('thumbs', id + ':', id + ':\uffff').catch(() => {});
     await DB.del('files', id).catch(() => {});
   }
   await DB.del('pieces', p.id);
@@ -369,6 +390,18 @@ function renderLib(){
   }
   libEl.appendChild(grid);
   libEl.appendChild(h('p', 'sc-note', '樂譜只存在這台 iPad 裡，不會上傳到網路。刪除主畫面的 App 或清除 Safari 網站資料時，樂譜也會一起消失，請保留原始檔。'));
+  showUsage();
+}
+function showUsage(){
+  if(!(navigator.storage && navigator.storage.estimate)) return;
+  navigator.storage.estimate().then(e => {
+    if(!e || !e.usage) return;
+    const mb = e.usage / 1048576;
+    const t = mb >= 1024 ? (mb / 1024).toFixed(1) + ' GB' : Math.max(1, Math.round(mb)) + ' MB';
+    const el = h('p', 'sc-note sc-usage'); el.textContent = `目前使用空間：約 ${t}（${pieces.length} 首）`;
+    libEl.querySelectorAll('.sc-usage').forEach(x => x.remove());
+    libEl.appendChild(el);
+  }).catch(() => {});
 }
 
 /* ---------- open / close ---------- */
@@ -455,7 +488,7 @@ function stageSize(){
   const dpr = Math.min(window.devicePixelRatio || 1, 3);
   return {dpr, W:Math.max(1, Math.floor(stage.clientWidth * dpr)), H:Math.max(1, Math.floor(stage.clientHeight * dpr))};
 }
-const pageKey = (pg, W, H) => `${pg.id}:${pg.file}:${pg.n}:${pg.rot}:${W}x${H}`;
+const pageKey = (pg, W, H) => `${pg.id}:${pg.file}:${pg.n}:${pg.rot}${cropSig(pg)}:${W}x${H}`;
 function getCanvas(pg, urgent){
   const {W, H} = stageSize();
   const k = pageKey(pg, W, H);
@@ -849,7 +882,7 @@ function renderEditor(){
         <h2>頁面 <span class="sp"></span>
           <button class="sc-btn" id="edSort">依檔名排序</button>
           <button class="sc-btn" id="edAdd">＋ 加入頁面</button></h2>
-        <p class="sc-help">點一下縮圖可以放大看。按住縮圖約半秒後拖曳，可以調整順序；也可以用 ◀ ▶ 一格一格移動。⟳ 旋轉、✕ 刪除這一頁。</p>
+        <p class="sc-help">點一下縮圖可以放大看，也可以在那裡裁切。按住縮圖約半秒後拖曳，可以調整順序；也可以用 ◀ ▶ 一格一格移動。⟳ 旋轉、✕ 刪除這一頁。</p>
         <div class="sc-pages" id="edPages"></div>
       </section>
       <section class="card">
@@ -985,12 +1018,12 @@ function renderPages(){
     const c = h('div', 'sc-pg'); c.dataset.k = k;
     const th = h('div', 'th'); setThumb(th, pg);
     const no = h('span', 'no', String(k + 1));
-    const fn = h('div', 'fn'); fn.textContent = (pg.name || '') + (pg.of > 1 ? ` · p.${pg.n}` : '');
+    const fn = h('div', 'fn'); fn.textContent = (pg.crop ? '✂ ' : '') + (pg.name || '') + (pg.of > 1 ? ` · p.${pg.n}` : '');
     const acts = h('div', 'acts');
     const mk = (t, lab, fnc, dis) => { const b = h('button', null, t); b.setAttribute('aria-label', lab); b.disabled = !!dis; if(dis) b.style.opacity = .3; b.addEventListener('click', fnc); return b; };
     acts.append(
       mk('◀', '往前移', () => movePage(k, k - 1), k === 0),
-      mk('⟳', '旋轉', () => { pg.rot = (pg.rot + 90) % 360; savePiece(p); renderPages(); }),
+      mk('⟳', '旋轉', () => { pg.rot = (pg.rot + 90) % 360; if(pg.crop){ const c = pg.crop; pg.crop = {l:c.b, t:c.l, r:c.t, b:c.r}; } savePiece(p); renderPages(); }),
       mk('✕', '刪除這一頁', () => {
         if(!confirm(`刪除第 ${k + 1} 頁？`)) return;
         p.pages.splice(k, 1);
@@ -1075,74 +1108,170 @@ document.addEventListener('touchcancel', () => dragEnd(true));
 document.addEventListener('visibilitychange', () => { if(drag) dragEnd(true); });
 window.addEventListener('blur', () => { if(drag) dragEnd(true); });
 
-/* ---------- page preview (tap a thumbnail in the editor) ---------- */
+/* ---------- page preview (tap a thumbnail in the editor), with cropping ---------- */
 const pvEl = h('div', 'sc-pv'); pvEl.hidden = true;
 pvEl.innerHTML = `
-  <div class="sc-pv-top"><span class="sc-pv-title" id="pvTitle"></span><button class="sc-btn" id="pvClose">✕ 關閉</button></div>
+  <div class="sc-pv-top">
+    <span class="sc-pv-title" id="pvTitle"></span>
+    <button class="sc-btn nav-only" id="pvCrop">✂ 裁切</button>
+    <button class="sc-btn nav-only" id="pvClose">✕ 關閉</button>
+    <span class="sc-pv-hint crop-only">拖曳框線或四個角，切掉不要的空白</span>
+  </div>
   <div class="sc-pv-stage" id="pvStage"></div>
-  <div class="sc-pv-bot">
+  <div class="sc-pv-bot nav-only">
     <button class="sc-btn" id="pvPrev">‹ 上一頁</button>
     <span class="sp"></span>
     <button class="sc-btn" id="pvBack">◀ 往前移</button>
     <button class="sc-btn" id="pvFwd">往後移 ▶</button>
     <span class="sp"></span>
     <button class="sc-btn" id="pvNext">下一頁 ›</button>
+  </div>
+  <div class="sc-pv-bot crop-only">
+    <button class="sc-btn" id="pvAuto">自動去白邊</button>
+    <button class="sc-btn" id="pvUncrop">不裁切</button>
+    <span class="sp"></span>
+    <button class="sc-btn" id="pvCancel">取消</button>
+    <button class="sc-btn primary" id="pvDone">完成</button>
   </div>`;
 document.body.appendChild(pvEl);
-let pvK = -1, pvTok = 0;
-function openPreview(k){ if(!cur || !cur.pages[k]) return; pvK = k; pvEl.hidden = false; renderPreview(); }
+let pvK = -1, pvTok = 0, pvCrop = null;     // pvCrop: crop being edited {l,t,r,b} (fractions of the rotated page), null = not cropping
+function openPreview(k){ if(!cur || !cur.pages[k]) return; pvK = k; pvCrop = null; pvEl.hidden = false; renderPreview(); }
 function closePreview(){
   if(pvEl.hidden) return;
-  pvEl.hidden = true; pvTok++;
+  pvEl.hidden = true; pvTok++; pvCrop = null; pvEl.classList.remove('cropping');
   $('pvStage').querySelectorAll('canvas').forEach(freeCanvas); $('pvStage').innerHTML = '';
 }
 function renderPreview(){
   const p = cur, pg = p && p.pages[pvK];
   if(!pg){ closePreview(); return; }
-  const N = p.pages.length;
-  $('pvTitle').textContent = `第 ${pvK + 1} / ${N} 頁 · ${pg.name || ''}${pg.of > 1 ? ' p.' + pg.n : ''}`;
+  const N = p.pages.length, cropping = !!pvCrop;
+  pvEl.classList.toggle('cropping', cropping);
+  $('pvTitle').textContent = `第 ${pvK + 1} / ${N} 頁 · ${pg.name || ''}${pg.of > 1 ? ' p.' + pg.n : ''}${pg.crop ? ' · 已裁切' : ''}`;
   $('pvPrev').disabled = pvK === 0; $('pvNext').disabled = pvK === N - 1;
   $('pvBack').disabled = pvK === 0; $('pvFwd').disabled = pvK === N - 1;
   const box = $('pvStage'), tok = ++pvTok;
   const dpr = Math.min(window.devicePixelRatio || 1, 3);
-  const W = Math.floor(box.clientWidth * dpr), H = Math.floor(box.clientHeight * dpr);
-  const ph = h('img'); ph.alt = ''; box.querySelectorAll('canvas').forEach(freeCanvas); box.replaceChildren(ph);
-  thumb(pg).then(u => { if(tok === pvTok && box.firstChild === ph) ph.src = u; }).catch(() => {});
-  enqueue('pv:' + pageKey(pg, W, H), () => drawPage(pg, W, H), true).then(c => {
+  const pad = cropping ? 24 : 0;          // room around the page for the crop handles
+  const W = Math.floor((box.clientWidth - pad * 2) * dpr), H = Math.floor((box.clientHeight - pad * 2) * dpr);
+  box.querySelectorAll('canvas').forEach(freeCanvas);
+  if(!cropping){
+    const ph = h('img'); ph.alt = ''; box.replaceChildren(ph);
+    thumb(pg).then(u => { if(tok === pvTok && box.firstChild === ph) ph.src = u; }).catch(() => {});
+  }else box.replaceChildren();
+  enqueue('pv:' + pageKey(pg, W, H) + (cropping ? ':full' : ''), () => drawPage(pg, W, H, cropping), true).then(c => {
     if(tok !== pvTok){ freeCanvas(c); return; }
     c.style.width = (c.width / dpr) + 'px'; c.style.height = (c.height / dpr) + 'px';
-    box.replaceChildren(c);
+    if(!cropping){ box.replaceChildren(c); return; }
+    const wrap = h('div', 'sc-crop-wrap'); wrap.appendChild(c);
+    const cb = h('div', 'sc-cropbox');
+    for(const k of ['t', 'b', 'l', 'r', 'tl', 'tr', 'bl', 'br']){ const hd = h('div', 'hd ' + k); hd.dataset.h = k; cb.appendChild(hd); }
+    wrap.appendChild(cb);
+    box.replaceChildren(wrap);
+    placeCropBox();
   }).catch(() => {});
 }
-function pvGo(d){ const n = pvK + d; if(cur && n >= 0 && n < cur.pages.length){ pvK = n; renderPreview(); } }
+function placeCropBox(){
+  const cb = pvEl.querySelector('.sc-cropbox'); if(!cb || !pvCrop) return;
+  const {l, t, r, b} = pvCrop;
+  cb.style.left = (l * 100) + '%'; cb.style.top = (t * 100) + '%'; cb.style.right = (r * 100) + '%'; cb.style.bottom = (b * 100) + '%';
+}
+function pvGo(d){ if(pvCrop) return; const n = pvK + d; if(cur && n >= 0 && n < cur.pages.length){ pvK = n; renderPreview(); } }
 function pvMove(d){
   const to = pvK + d; if(!cur || to < 0 || to >= cur.pages.length) return;
   const [m] = cur.pages.splice(pvK, 1); cur.pages.splice(to, 0, m); pvK = to;
   savePiece(cur); renderPages(); renderOrder(true); renderPreview();
+}
+function startCrop(){
+  const pg = cur && cur.pages[pvK]; if(!pg) return;
+  pvCrop = Object.assign({l:0, t:0, r:0, b:0}, pg.crop || {});
+  renderPreview();
+}
+function finishCrop(save){
+  const pg = cur && cur.pages[pvK];
+  if(save && pg){
+    const c = {}; let any = false;
+    for(const k of ['l', 't', 'r', 'b']){ const v = Math.round(pvCrop[k] * 1e4) / 1e4; c[k] = v < 0.002 ? 0 : v; if(c[k]) any = true; }
+    if(any) pg.crop = c; else delete pg.crop;
+    savePiece(cur); renderPages();
+  }
+  pvCrop = null; renderPreview();
+}
+// find the printed area: anything clearly darker than the paper. Works for scans and PDFs; photos with a dark
+// table around the paper keep their edges (adjust those by hand).
+async function autoCrop(){
+  const pg = cur && cur.pages[pvK]; if(!pg || !pvCrop) return;
+  const c = await enqueue('auto:' + pg.id, () => drawPage(pg, 900, 900, true), true);
+  const w = c.width, hh = c.height, px = c.getContext('2d').getImageData(0, 0, w, hh).data;
+  freeCanvas(c);
+  const lum = new Uint8Array(w * hh), hist = new Uint32Array(256);
+  for(let i = 0, j = 0; i < lum.length; i++, j += 4){ const v = (px[j] * 299 + px[j + 1] * 587 + px[j + 2] * 114) / 1000 | 0; lum[i] = v; hist[v]++; }
+  let acc = 0, paper = 255;                                   // paper = brightness that 60% of pixels reach
+  for(let v = 255; v >= 0; v--){ acc += hist[v]; if(acc >= lum.length * 0.6){ paper = v; break; } }
+  const ink = paper * 0.72;
+  const rows = new Uint32Array(hh), cols = new Uint32Array(w);
+  for(let y = 0; y < hh; y++) for(let x = 0; x < w; x++) if(lum[y * w + x] < ink){ rows[y]++; cols[x]++; }
+  const rMin = Math.max(2, w * 0.004), cMin = Math.max(2, hh * 0.004);
+  let t = 0, b = hh - 1, l = 0, r = w - 1;
+  while(t < hh && rows[t] < rMin) t++;
+  while(b > t && rows[b] < rMin) b--;
+  while(l < w && cols[l] < cMin) l++;
+  while(r > l && cols[r] < cMin) r--;
+  if(t >= b || l >= r){ return; }
+  const px2 = 0.02;                                           // keep a little margin
+  pvCrop = {l:Math.max(0, l / w - px2), t:Math.max(0, t / hh - px2), r:Math.max(0, (w - 1 - r) / w - px2), b:Math.max(0, (hh - 1 - b) / hh - px2)};
+  placeCropBox();
 }
 $('pvClose').addEventListener('click', closePreview);
 $('pvPrev').addEventListener('click', () => pvGo(-1));
 $('pvNext').addEventListener('click', () => pvGo(1));
 $('pvBack').addEventListener('click', () => pvMove(-1));
 $('pvFwd').addEventListener('click', () => pvMove(1));
+$('pvCrop').addEventListener('click', startCrop);
+$('pvCancel').addEventListener('click', () => finishCrop(false));
+$('pvDone').addEventListener('click', () => finishCrop(true));
+$('pvUncrop').addEventListener('click', () => { if(pvCrop){ pvCrop = {l:0, t:0, r:0, b:0}; placeCropBox(); } });
+$('pvAuto').addEventListener('click', () => { autoCrop().catch(e => console.error(e)); });
 document.addEventListener('keydown', e => {
   if(pvEl.hidden) return;
-  if(e.key === 'Escape') closePreview();
+  if(e.key === 'Escape'){ if(pvCrop) finishCrop(false); else closePreview(); }
   else if(e.key === 'ArrowLeft') pvGo(-1);
   else if(e.key === 'ArrowRight') pvGo(1);
+  else if(e.key === 'Enter' && pvCrop) finishCrop(true);
   else return;
   e.preventDefault(); e.stopImmediatePropagation();
 }, true);
-{ // swipe in the preview
-  let sx = 0, sy = 0, on = false;
+{ // swipe to turn pages; in crop mode, drag the crop handles
+  let sx = 0, sy = 0, on = false, hd = null;
   const st = $('pvStage');
-  st.addEventListener('pointerdown', e => { sx = e.clientX; sy = e.clientY; on = true; });
-  st.addEventListener('pointerup', e => {
+  st.addEventListener('pointerdown', e => {
+    const handle = pvCrop && e.target.closest('.hd');
+    if(handle){
+      const wrap = handle.closest('.sc-crop-wrap').getBoundingClientRect();
+      hd = {k:handle.dataset.h, x:e.clientX, y:e.clientY, w:wrap.width, h:wrap.height, c0:{...pvCrop}, id:e.pointerId};
+      try{ st.setPointerCapture(e.pointerId); }catch(err){}
+      e.preventDefault(); return;
+    }
+    sx = e.clientX; sy = e.clientY; on = !pvCrop;
+  });
+  st.addEventListener('pointermove', e => {
+    if(!hd || e.pointerId !== hd.id) return;
+    const dx = (e.clientX - hd.x) / hd.w, dy = (e.clientY - hd.y) / hd.h, c0 = hd.c0, c = pvCrop, MIN = 0.15;
+    const cl = (v, max) => Math.min(Math.max(0, v), Math.max(0, max));
+    if(hd.k.includes('l')) c.l = cl(c0.l + dx, 1 - c.r - MIN);
+    if(hd.k.includes('r')) c.r = cl(c0.r - dx, 1 - c.l - MIN);
+    if(hd.k.includes('t')) c.t = cl(c0.t + dy, 1 - c.b - MIN);
+    if(hd.k.includes('b')) c.b = cl(c0.b - dy, 1 - c.t - MIN);
+    placeCropBox();
+  });
+  const end = e => {
+    if(hd && e.pointerId === hd.id){ hd = null; return; }
     if(!on) return; on = false;
+    if(e.type !== 'pointerup') return;
     const dx = e.clientX - sx, dy = e.clientY - sy;
     if(Math.abs(dx) > 50 && Math.abs(dx) > Math.abs(dy) * 1.2) pvGo(dx < 0 ? 1 : -1);
-  });
-  st.addEventListener('pointercancel', () => { on = false; });
+  };
+  st.addEventListener('pointerup', end);
+  st.addEventListener('pointercancel', end);
   st.addEventListener('gesturestart', e => e.preventDefault());
 }
 let pvResize = 0;
@@ -1160,5 +1289,6 @@ document.addEventListener('contextmenu', e => { if(drag || e.target.closest('.sc
 })();
 
 window.__score = {importFiles, openPiece, closePiece, parseOrder, setMode, go, steps, openEditor, closeEditor,
+  get mem(){ return {files:fileCache.size, urls:urlCache.size, pages:pageCache.size}; }, get pvCrop(){ return pvCrop; },
   get cur(){ return cur; }, get state(){ return {mode, pi, si, tab, af:{...AF}, cache:pageCache.size}; }, SET, AF};
 })();
