@@ -824,6 +824,7 @@ function openEditor(){
 }
 function closeEditor(silent){
   if(!editorOpen) return;
+  closePreview(); if(drag) dragEnd(true);
   editorOpen = false; editorEl.hidden = true; editorEl.innerHTML = '';
   if(silent === true) return;
   if(cur){
@@ -848,7 +849,7 @@ function renderEditor(){
         <h2>頁面 <span class="sp"></span>
           <button class="sc-btn" id="edSort">依檔名排序</button>
           <button class="sc-btn" id="edAdd">＋ 加入頁面</button></h2>
-        <p class="sc-help">按住縮圖約半秒後拖曳，可以調整順序；也可以用 ◀ ▶ 一格一格移動。⟳ 旋轉、✕ 刪除這一頁。</p>
+        <p class="sc-help">點一下縮圖可以放大看。按住縮圖約半秒後拖曳，可以調整順序；也可以用 ◀ ▶ 一格一格移動。⟳ 旋轉、✕ 刪除這一頁。</p>
         <div class="sc-pages" id="edPages"></div>
       </section>
       <section class="card">
@@ -977,6 +978,7 @@ function renderOrder(setText){
 /* page thumbnails with drag-to-reorder */
 let drag = null;
 function renderPages(){
+  killGhosts();
   const p = cur, box = $('edPages'); box.innerHTML = '';
   if(!p.pages.length){ box.innerHTML = '<p class="sc-help">沒有頁面，按「＋ 加入頁面」。</p>'; return; }
   p.pages.forEach((pg, k) => {
@@ -1007,11 +1009,21 @@ function movePage(from, to){
   const [m] = p.pages.splice(from, 1); p.pages.splice(to, 0, m);
   savePiece(p); renderPages(); renderOrder(true);
 }
+/* Drag: press and hold a thumbnail, then move. A short tap opens the page large (preview).
+   Every way a touch can end (lift, cancel, a second finger, the app going to the background) cleans up the
+   floating copy, so it can never be left stuck on screen. */
+function killGhosts(){
+  document.querySelectorAll('.sc-ghost').forEach(g => g.remove());
+  document.querySelectorAll('.sc-pg.drag, .sc-pg.target').forEach(c => c.classList.remove('drag', 'target'));
+}
 function startDrag(e, card, k){
   if(e.target.closest('button') || (e.pointerType === 'mouse' && e.button !== 0)) return;
+  if(drag){ dragEnd(true); return; }            // a second finger: cancel, do nothing
+  killGhosts();
   const sx = e.clientX, sy = e.clientY;
-  const d = {k, card, sx, sy, x:sx, y:sy, on:false, target:-1, timer:0, ghost:null};
+  const d = {k, card, sx, sy, x:sx, y:sy, on:false, target:-1, timer:0, ghost:null, t0:performance.now()};
   d.timer = setTimeout(() => {
+    if(drag !== d || !card.isConnected) return;
     d.on = true;
     const g = card.cloneNode(true); g.classList.add('sc-ghost'); g.style.left = d.x + 'px'; g.style.top = d.y + 'px';
     document.body.appendChild(g); d.ghost = g; card.classList.add('drag');
@@ -1022,39 +1034,119 @@ function dragMove(x, y){
   const d = drag; if(!d) return false;
   d.x = x; d.y = y;
   if(!d.on){ if(Math.hypot(x - d.sx, y - d.sy) > 10){ clearTimeout(d.timer); drag = null; } return false; }
+  if(!d.ghost || !d.ghost.isConnected){ dragEnd(true); return false; }
   d.ghost.style.left = x + 'px'; d.ghost.style.top = y + 'px';
   d.ghost.style.display = 'none';
   const under = document.elementFromPoint(x, y); d.ghost.style.display = '';
   const t = under && under.closest('.sc-pg');
-  const nk = t && t !== d.card ? +t.dataset.k : -1;
+  const nk = t && t !== d.card && !t.classList.contains('sc-ghost') ? +t.dataset.k : -1;
   if(nk !== d.target){
-    $('edPages').querySelectorAll('.target').forEach(z => z.classList.remove('target'));
+    document.querySelectorAll('.sc-pg.target').forEach(z => z.classList.remove('target'));
     if(nk >= 0) t.classList.add('target');
     d.target = nk;
   }
-  const body = editorEl.querySelector('.sc-ebody'), r = body.getBoundingClientRect();     // auto-scroll near the edges
-  if(y < r.top + 50) body.scrollTop -= 12; else if(y > r.bottom - 50) body.scrollTop += 12;
+  const body = editorEl.querySelector('.sc-ebody');
+  if(body){ const r = body.getBoundingClientRect(); if(y < r.top + 50) body.scrollTop -= 12; else if(y > r.bottom - 50) body.scrollTop += 12; }
   return true;
 }
 function dragEnd(cancel){
-  const d = drag; if(!d) return; drag = null;
+  const d = drag; drag = null;
+  killGhosts();
+  if(!d) return;
   clearTimeout(d.timer);
-  if(!d.on) return;
-  if(d.ghost) d.ghost.remove();
-  d.card.classList.remove('drag');
+  if(!d.on){                                   // a short tap on the thumbnail: show the page large
+    if(!cancel && performance.now() - d.t0 < 600 && Math.hypot(d.x - d.sx, d.y - d.sy) < 10) openPreview(d.k);
+    return;
+  }
   if(!cancel && d.target >= 0) movePage(d.k, d.target);
-  else $('edPages') && $('edPages').querySelectorAll('.target').forEach(z => z.classList.remove('target'));
 }
 document.addEventListener('pointermove', e => { if(drag && e.pointerType !== 'touch') dragMove(e.clientX, e.clientY); });
 document.addEventListener('pointerup', e => { if(drag && e.pointerType !== 'touch') dragEnd(false); });
+document.addEventListener('pointercancel', e => { if(drag && e.pointerType !== 'touch') dragEnd(true); });
 // touch: use touch events so that once a drag has started the list does not scroll underneath it
 document.addEventListener('touchmove', e => {
   if(!drag) return;
+  if(e.touches.length > 1){ dragEnd(true); return; }
   const t = e.touches[0];
   if(dragMove(t.clientX, t.clientY) && e.cancelable) e.preventDefault();
 }, {passive:false});
-document.addEventListener('touchend', () => { if(drag) dragEnd(false); });
-document.addEventListener('touchcancel', () => { if(drag) dragEnd(true); });
+document.addEventListener('touchend', e => { if(drag){ if(e.touches.length === 0) dragEnd(false); } else killGhosts(); });
+document.addEventListener('touchcancel', () => dragEnd(true));
+document.addEventListener('visibilitychange', () => { if(drag) dragEnd(true); });
+window.addEventListener('blur', () => { if(drag) dragEnd(true); });
+
+/* ---------- page preview (tap a thumbnail in the editor) ---------- */
+const pvEl = h('div', 'sc-pv'); pvEl.hidden = true;
+pvEl.innerHTML = `
+  <div class="sc-pv-top"><span class="sc-pv-title" id="pvTitle"></span><button class="sc-btn" id="pvClose">✕ 關閉</button></div>
+  <div class="sc-pv-stage" id="pvStage"></div>
+  <div class="sc-pv-bot">
+    <button class="sc-btn" id="pvPrev">‹ 上一頁</button>
+    <span class="sp"></span>
+    <button class="sc-btn" id="pvBack">◀ 往前移</button>
+    <button class="sc-btn" id="pvFwd">往後移 ▶</button>
+    <span class="sp"></span>
+    <button class="sc-btn" id="pvNext">下一頁 ›</button>
+  </div>`;
+document.body.appendChild(pvEl);
+let pvK = -1, pvTok = 0;
+function openPreview(k){ if(!cur || !cur.pages[k]) return; pvK = k; pvEl.hidden = false; renderPreview(); }
+function closePreview(){
+  if(pvEl.hidden) return;
+  pvEl.hidden = true; pvTok++;
+  $('pvStage').querySelectorAll('canvas').forEach(freeCanvas); $('pvStage').innerHTML = '';
+}
+function renderPreview(){
+  const p = cur, pg = p && p.pages[pvK];
+  if(!pg){ closePreview(); return; }
+  const N = p.pages.length;
+  $('pvTitle').textContent = `第 ${pvK + 1} / ${N} 頁 · ${pg.name || ''}${pg.of > 1 ? ' p.' + pg.n : ''}`;
+  $('pvPrev').disabled = pvK === 0; $('pvNext').disabled = pvK === N - 1;
+  $('pvBack').disabled = pvK === 0; $('pvFwd').disabled = pvK === N - 1;
+  const box = $('pvStage'), tok = ++pvTok;
+  const dpr = Math.min(window.devicePixelRatio || 1, 3);
+  const W = Math.floor(box.clientWidth * dpr), H = Math.floor(box.clientHeight * dpr);
+  const ph = h('img'); ph.alt = ''; box.querySelectorAll('canvas').forEach(freeCanvas); box.replaceChildren(ph);
+  thumb(pg).then(u => { if(tok === pvTok && box.firstChild === ph) ph.src = u; }).catch(() => {});
+  enqueue('pv:' + pageKey(pg, W, H), () => drawPage(pg, W, H), true).then(c => {
+    if(tok !== pvTok){ freeCanvas(c); return; }
+    c.style.width = (c.width / dpr) + 'px'; c.style.height = (c.height / dpr) + 'px';
+    box.replaceChildren(c);
+  }).catch(() => {});
+}
+function pvGo(d){ const n = pvK + d; if(cur && n >= 0 && n < cur.pages.length){ pvK = n; renderPreview(); } }
+function pvMove(d){
+  const to = pvK + d; if(!cur || to < 0 || to >= cur.pages.length) return;
+  const [m] = cur.pages.splice(pvK, 1); cur.pages.splice(to, 0, m); pvK = to;
+  savePiece(cur); renderPages(); renderOrder(true); renderPreview();
+}
+$('pvClose').addEventListener('click', closePreview);
+$('pvPrev').addEventListener('click', () => pvGo(-1));
+$('pvNext').addEventListener('click', () => pvGo(1));
+$('pvBack').addEventListener('click', () => pvMove(-1));
+$('pvFwd').addEventListener('click', () => pvMove(1));
+document.addEventListener('keydown', e => {
+  if(pvEl.hidden) return;
+  if(e.key === 'Escape') closePreview();
+  else if(e.key === 'ArrowLeft') pvGo(-1);
+  else if(e.key === 'ArrowRight') pvGo(1);
+  else return;
+  e.preventDefault(); e.stopImmediatePropagation();
+}, true);
+{ // swipe in the preview
+  let sx = 0, sy = 0, on = false;
+  const st = $('pvStage');
+  st.addEventListener('pointerdown', e => { sx = e.clientX; sy = e.clientY; on = true; });
+  st.addEventListener('pointerup', e => {
+    if(!on) return; on = false;
+    const dx = e.clientX - sx, dy = e.clientY - sy;
+    if(Math.abs(dx) > 50 && Math.abs(dx) > Math.abs(dy) * 1.2) pvGo(dx < 0 ? 1 : -1);
+  });
+  st.addEventListener('pointercancel', () => { on = false; });
+  st.addEventListener('gesturestart', e => e.preventDefault());
+}
+let pvResize = 0;
+window.addEventListener('resize', () => { if(!pvEl.hidden){ clearTimeout(pvResize); pvResize = setTimeout(renderPreview, 150); } });
 document.addEventListener('contextmenu', e => { if(drag || e.target.closest('.sc-pg') || e.target.closest('.sc-stage')) e.preventDefault(); });
 
 /* ================= init ================= */

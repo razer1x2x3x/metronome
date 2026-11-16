@@ -138,3 +138,18 @@
 }
 
 .sc-reader.strip .sc-pos{bottom:114px}
+
+/* page preview (tap a thumbnail in the editor) */
+.sc-pv{
+  position:fixed;inset:0;z-index:90;background:rgba(20,16,12,.94);display:flex;flex-direction:column;gap:10px;
+  padding:calc(10px + env(safe-area-inset-top)) calc(14px + env(safe-area-inset-right)) calc(12px + env(safe-area-inset-bottom)) calc(14px + env(safe-area-inset-left))
+}
+.sc-pv[hidden]{display:none}
+.sc-pv-top,.sc-pv-bot{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.sc-pv-title{flex:1;min-width:0;color:#fff;font-size:16px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.sc-pv-bot .sp{flex:1}
+.sc-pv .sc-btn{height:46px;padding:0 18px;font-size:16px}
+.sc-pv .sc-btn:disabled{opacity:.35}
+.sc-pv-stage{flex:1;min-height:0;display:flex;align-items:center;justify-content:center;touch-action:none;overflow:hidden}
+.sc-pv-stage canvas{display:block;background:#fff}
+.sc-pv-stage img{max-width:100%;max-height:100%;object-fit:contain;background:#fff}
