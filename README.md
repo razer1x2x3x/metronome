@@ -13,6 +13,23 @@
 - 鐘擺上的配重塊會依速度滑到刻度上對應的位置
 - 我的速度：儲存常用的速度、拍號、重音設定
 
+## 翻譜
+
+上方切換「節拍器｜翻譜」，切換時節拍器照常在跑。翻譜頁上方有迷你節拍器列，按 ♩ 可以隱藏。
+
+- **匯入**：一次選多個 PDF 或圖片，依檔名自然順序排好（1、2、10）。樂譜只存在這台 iPad，不會上傳。
+- **編輯**：
+  - 按住縮圖拖曳，或用 ◀ ▶ 調整頁序；⟳ 旋轉，✕ 刪除。
+  - 演奏順序可以寫成 `1 2 3 1 2 4` 或 `1-3, 1-2, 4`。
+  - 可以記住這首曲子的節拍器設定。
+- **看譜模式**：左右滑翻頁，雙指縮放，雙擊放大或還原，點一下顯示／隱藏縮圖列。
+- **演奏模式**：依演奏順序翻頁。點畫面任何地方是下一頁，最左邊 1/5 是上一頁，左右滑也可以；翻頁後 0.4 秒內的觸碰不算。
+- **⚙ 設定**（預設都關閉）：
+  - **跟著節拍器自動翻頁**：在編輯裡填每一步的小節數，節拍器數到就翻頁。可以選翻頁時機和預備小節。
+  - **鍵盤／藍牙踏板翻頁**：→ ↓ PageDown 下一頁，← ↑ PageUp 上一頁。
+
+PDF 由 [PDF.js](https://github.com/mozilla/pdf.js)（Apache-2.0，`vendor/pdfjs/`）顯示。
+
 ## 為什麼準
 
 聲音由 Web Audio API 事先排入音訊硬體的時鐘，在指定的取樣點準時播放。不靠 JavaScript 計時器逐拍觸發，所以網路或畫面忙碌都不會影響節拍。載入一次之後由 Service Worker 快取，離線也能用。
@@ -21,7 +38,7 @@
 
 1. 在 GitHub 建立新的 repository（例如 `metronome`，設為 Public）。
 2. 在 repo 頁面選 **Add file → Upload files**，把這個資料夾裡的
-   `index.html`、`sw.js`、`manifest.webmanifest`、`icons/` 整個拖進去，按 **Commit changes**。
+   `index.html`、`score.js`、`score.css`、`sw.js`、`manifest.webmanifest`、`icons/`、`vendor/` 整個拖進去，按 **Commit changes**。
 3. 到 **Settings → Pages**，Source 選 **Deploy from a branch**，Branch 選 `main`／`/(root)`，按 Save。
 4. 約一分鐘後網址會是 `https://<你的帳號>.github.io/metronome/`。
 

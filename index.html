@@ -14,6 +14,7 @@
 <link rel="manifest" href="manifest.webmanifest">
 <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
 <link rel="icon" type="image/png" href="icons/icon-192.png">
+<link rel="stylesheet" href="score.css">
 <style>
 :root{
   --bg:#f4eee4; --surface:#fffcf7; --surface-2:#f8f2e8; --ink:#2b241e; --muted:#7c7065; --line:#e5dbcd;
@@ -49,7 +50,12 @@ button{cursor:pointer;touch-action:manipulation;-webkit-user-select:none;user-se
           calc(16px + env(safe-area-inset-bottom)) calc(16px + env(safe-area-inset-left));
 }
 .top{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:0 2px 10px}
-.top h1{margin:0;font-size:20px;font-weight:700;letter-spacing:.08em}
+.top{flex-wrap:wrap;min-height:44px}
+.tabs button{font-size:16px;padding:7px 18px}
+body[data-tab="score"] #viewSeg{display:none}
+body:not([data-tab="score"]) #score,body:not([data-tab="score"]) .score-tools{display:none}
+body[data-tab="score"] .layout{display:none}
+body[data-tab="score"] .app{height:100vh;height:100dvh}
 .seg{display:inline-flex;background:var(--surface-2);border:1px solid var(--line);border-radius:999px;padding:3px}
 .seg button{border:0;background:transparent;padding:7px 16px;border-radius:999px;font-size:15px;color:var(--muted)}
 .seg button[aria-pressed="true"]{background:var(--surface);color:var(--ink);box-shadow:0 1px 3px var(--shadow);font-weight:600}
@@ -239,7 +245,11 @@ input[type=range]{width:100%;accent-color:var(--accent);height:28px;margin:0}
 <body>
 <div class="app">
   <header class="top">
-    <h1>節拍器</h1>
+    <div class="seg tabs" id="tabSeg" role="tablist">
+      <button data-tab="metro" role="tab">節拍器</button>
+      <button data-tab="score" role="tab">翻譜</button>
+    </div>
+    <div class="score-tools" id="scoreTools"></div>
     <div class="seg" id="viewSeg">
       <button data-view="pendulum">鐘擺</button>
       <button data-view="lights">光點</button>
@@ -314,6 +324,8 @@ input[type=range]{width:100%;accent-color:var(--accent);height:28px;margin:0}
         <div class="favs" id="favs"></div>
       </section>
   </div>
+
+  <main id="score" class="score" aria-label="翻譜"></main>
 </div>
 
 <script>
@@ -595,10 +607,13 @@ async function requestWake(){
     }
   }catch(e){ wakeLock = null; }
 }
-function releaseWake(){ try{ if(wakeLock) wakeLock.release(); }catch(e){} wakeLock = null; }
+function releaseWake(){
+  if(window.scoreWantsWake && window.scoreWantsWake()) return;   // the score reader keeps the screen on too
+  try{ if(wakeLock) wakeLock.release(); }catch(e){} wakeLock = null;
+}
 document.addEventListener('visibilitychange', () => {
+  if(document.visibilityState === 'visible' && (playing || (window.scoreWantsWake && window.scoreWantsWake()))) requestWake();
   if(document.visibilityState === 'visible' && playing){
-    requestWake();
     if(ctx && ctx.state !== 'running') ctx.resume().catch(() => {});
   }
 });
@@ -608,6 +623,7 @@ const $ = id => document.getElementById(id);
 const bpmInput = $('bpmInput'), bpmRange = $('bpmRange'), presetVal = $('presetVal');
 const visual = $('visual'), dotsEl = $('dots'), canvas = $('pend');
 
+const hooks = {bpm:[], transport:[], meter:[]};   // the score page listens to these
 function setBpm(v){
   S.bpm = clampBpm(v);
   if(document.activeElement !== bpmInput) bpmInput.value = S.bpm;
@@ -616,6 +632,7 @@ function setBpm(v){
   presetVal.innerHTML = t ? `<span class="it">${t.it}</span><span class="zh">${t.zh}</span>` : '—';
   renderTermsState(t);
   needsDraw = true;
+  hooks.bpm.forEach(f => f());
   save();
 }
 
@@ -670,6 +687,7 @@ $('playBtn').addEventListener('click', toggle);
 function renderTransport(){
   $('playBtn').classList.toggle('on', playing);
   $('playTxt').textContent = playing ? '停止' : '開始';
+  hooks.transport.forEach(f => f());
 }
 
 /* view toggle */
@@ -747,7 +765,7 @@ function setMeter(key, accents){
   S.accents = (accents && accents.length === METERS[key].acc.length) ? fixLevels(accents) : METERS[key].acc.slice();
   if(beatIdx >= S.accents.length) beatIdx = 0;
   $('unit').textContent = (METERS[key].unit === 8 ? '♪︎' : '♩︎') + ' =';
-  renderDots(); renderMeter(); save();
+  renderDots(); renderMeter(); hooks.meter.forEach(f => f()); save();
 }
 
 /* volume */
@@ -857,6 +875,8 @@ $('favName').addEventListener('keydown', e => { if(e.key === 'Enter') addFav(); 
 /* keyboard (external keyboard on iPad / desktop) */
 document.addEventListener('keydown', e => {
   if(e.target.tagName === 'INPUT' && e.target.type !== 'range') return;
+  if(e.target.tagName === 'TEXTAREA' || e.target.tagName === 'SELECT') return;
+  if(window.scoreKey && window.scoreKey(e)) return;
   if(e.code === 'Space'){ e.preventDefault(); toggle(); }
   else if(e.key === 'ArrowUp' || e.key === 'ArrowRight'){ e.preventDefault(); setBpm(S.bpm + 1); }
   else if(e.key === 'ArrowDown' || e.key === 'ArrowLeft'){ e.preventDefault(); setBpm(S.bpm - 1); }
@@ -1038,7 +1058,8 @@ requestAnimationFrame(frame);
 if('serviceWorker' in navigator && /^https?:$/.test(location.protocol)){
   navigator.serviceWorker.register('sw.js').catch(() => {});
 }
-window.__metronome = {S, stats, get events(){ return events; }, get ctx(){ return ctx; }, get master(){ return master; }, start, stop};   // for debugging/tests
+window.__metronome = {S, stats, hooks, get events(){ return events; }, get ctx(){ return ctx; }, get master(){ return master; }, start, stop};   // for debugging/tests
 </script>
+<script src="score.js"></script>
 </body>
 </html>

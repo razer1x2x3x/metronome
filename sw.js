@@ -1,8 +1,12 @@
 // Offline support: serve from cache immediately, refresh the cache in the background.
-const CACHE = 'metronome-v5';
+const CACHE = 'metronome-v6';
 const ASSETS = [
   './',
   './index.html',
+  './score.js',
+  './score.css',
+  './vendor/pdfjs/pdf.min.mjs',
+  './vendor/pdfjs/pdf.worker.min.mjs',
   './manifest.webmanifest',
   './icons/icon-192.png',
   './icons/icon-512.png',
