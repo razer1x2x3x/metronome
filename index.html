@@ -234,6 +234,12 @@ input[type=range]{width:100%;accent-color:var(--accent);height:28px;margin:0}
   .tempo{gap:6px 8px}
   .set{gap:6px}
 }
+#toast{
+  position:fixed;left:50%;bottom:calc(24px + env(safe-area-inset-bottom));transform:translate(-50%,20px);z-index:100;
+  background:rgba(30,24,18,.9);color:#fff;padding:12px 20px;border-radius:999px;font-size:16px;font-weight:600;
+  opacity:0;pointer-events:none;transition:opacity .25s,transform .25s;white-space:nowrap
+}
+#toast.on{opacity:1;transform:translate(-50%,0)}
 @media (max-width: 420px){
   .picks{gap:6px}
   .pick{padding:0 6px 0 10px;column-gap:4px}
@@ -447,6 +453,18 @@ function ensureAudio(){
   const s = ctx.createBufferSource(); s.buffer = ctx.createBuffer(1, 1, ctx.sampleRate); s.connect(ctx.destination); s.start(0);
   return ctx;
 }
+/* After the iPad locks or the app goes to the background, a home-screen web app can come back with an
+   AudioContext whose clock no longer moves (it may even still say 'running'). So the next press of 開始
+   (a user gesture, which iOS needs to start audio) throws the old context away and makes a new one. */
+let ctxStale = false;
+function freshAudio(){
+  if(ctx && (ctxStale || ctx.state !== 'running')){
+    const old = ctx; ctx = null; master = null; bus = null; noiseBuf = null;
+    try{ old.close().catch(() => {}); }catch(e){}
+  }
+  ctxStale = false;
+  return ensureAudio();
+}
 function volGain(v){ const x = v / 100; return x * x; }
 function newBus(){ bus = ctx.createGain(); bus.connect(master); return bus; }
 
@@ -524,12 +542,21 @@ let playing = false, nextTime = 0, beatIdx = 0, subIdx = 0, beatCount = 0;
 let events = [];          // scheduled beats for the visuals: {time, beat, level, n, dur}
 const stats = {late:0, resync:0, maxLate:0};
 
-let worker = null, fallbackTimer = 0;
-try{
-  const src = 'let id=0;onmessage=e=>{clearInterval(id);if(e.data==="start")id=setInterval(()=>postMessage(0),20)}';
-  worker = new Worker(URL.createObjectURL(new Blob([src], {type:'text/javascript'})));
-  worker.onmessage = schedule;
-}catch(e){ worker = null; }
+let worker = null, fallbackTimer = 0, lastTick = 0;
+const WORKER_SRC = 'let id=0;onmessage=e=>{clearInterval(id);if(e.data==="start")id=setInterval(()=>postMessage(0),20)}';
+function tick(){ lastTick = performance.now(); schedule(); }
+function makeWorker(){
+  try{ if(worker) worker.terminate(); }catch(e){}
+  try{
+    worker = new Worker(URL.createObjectURL(new Blob([WORKER_SRC], {type:'text/javascript'})));
+    worker.onmessage = tick;
+  }catch(e){ worker = null; }
+}
+makeWorker();
+function startTicker(){
+  lastTick = performance.now();
+  if(worker) worker.postMessage('start'); else { clearInterval(fallbackTimer); fallbackTimer = setInterval(tick, 20); }
+}
 
 function schedule(){
   if(!playing || !ctx) return;
@@ -554,22 +581,27 @@ function schedule(){
   }
 }
 
+let startedAt = 0;
+const clockSeen = {v:-1, t:0};
 async function start(){
-  ensureAudio();
+  freshAudio();
   const resumed = ctx.state === 'running' ? null : ctx.resume();
   newBus();
   playing = true; beatIdx = 0; subIdx = 0; beatCount = 0; events = [];
-  if(resumed){ try{ await resumed; }catch(e){} }
+  startedAt = performance.now(); clockSeen.v = -1;
+  // never wait forever: on iOS resume() can stay pending after an interruption
+  if(resumed){ try{ await Promise.race([resumed, new Promise(r => setTimeout(r, 300))]); }catch(e){} }
   if(!playing) return;
   nextTime = ctx.currentTime + 0.08;
   schedule();
-  if(worker) worker.postMessage('start'); else { clearInterval(fallbackTimer); fallbackTimer = setInterval(schedule, 20); }
+  startTicker();
   requestWake();
   renderTransport();
 }
 function stop(){
   playing = false;
   if(worker) worker.postMessage('stop'); else clearInterval(fallbackTimer);
+  clearInterval(fallbackTimer);
   if(bus && ctx){                     // silence anything already queued
     const b = bus; b.gain.setValueAtTime(0, ctx.currentTime);
     setTimeout(() => { try{ b.disconnect(); }catch(e){} }, 400);
@@ -612,11 +644,41 @@ function releaseWake(){
   try{ if(wakeLock) wakeLock.release(); }catch(e){} wakeLock = null;
 }
 document.addEventListener('visibilitychange', () => {
-  if(document.visibilityState === 'visible' && (playing || (window.scoreWantsWake && window.scoreWantsWake()))) requestWake();
-  if(document.visibilityState === 'visible' && playing){
+  if(document.visibilityState !== 'visible'){ ctxStale = true; return; }
+  if(playing || (window.scoreWantsWake && window.scoreWantsWake())) requestWake();
+  if(playing){
     if(ctx && ctx.state !== 'running') ctx.resume().catch(() => {});
+    startedAt = performance.now(); clockSeen.v = -1;      // give the audio a second to come back
   }
 });
+window.addEventListener('pagehide', () => { ctxStale = true; });
+
+/* watchdog, run every frame while playing:
+   - the worker's ticks stopped → schedule from here and start a new worker
+   - the audio clock has not moved for a while → the audio is dead: stop, so the next 開始 starts fresh */
+function watchdog(){
+  if(!playing || !ctx || document.visibilityState !== 'visible') return;
+  const t = performance.now();
+  if(t - lastTick > 250){
+    schedule();
+    if(t - lastTick > 600){ makeWorker(); startTicker(); }
+  }
+  const c = ctx.currentTime;
+  if(c !== clockSeen.v){ clockSeen.v = c; clockSeen.t = t; }
+  else if(t - clockSeen.t > 800 && t - startedAt > 1200){
+    stats.dead = (stats.dead || 0) + 1;
+    ctxStale = true;
+    stop();
+    toast('聲音沒有啟動，請再按一次「開始」');
+  }
+}
+let toastTimer = 0;
+function toast(msg){
+  let el = document.getElementById('toast');
+  if(!el){ el = document.createElement('div'); el.id = 'toast'; el.setAttribute('role', 'status'); document.body.appendChild(el); }
+  el.textContent = msg; el.classList.add('on');
+  clearTimeout(toastTimer); toastTimer = setTimeout(() => el.classList.remove('on'), 3000);
+}
 
 /* ================= UI ================= */
 const $ = id => document.getElementById(id);
@@ -757,7 +819,7 @@ const renderMeter = optionMenu('meterMenu', Object.keys(METERS).map(k => ({label
 const renderSub = optionMenu('subMenu', SUBS, it => it.n === S.subdiv, it => { S.subdiv = it.n; save(); });
 optionMenu('soundMenu', SOUNDS, it => it.id === S.sound, it => {
   S.sound = it.id; save();
-  if(!playing){ ensureAudio(); if(ctx.state !== 'running') ctx.resume(); voice(ctx.currentTime + 0.03, 'acc', master); }
+  if(!playing){ freshAudio(); if(ctx.state !== 'running') ctx.resume(); voice(ctx.currentTime + 0.03, 'acc', master); }
 });
 
 function setMeter(key, accents){
@@ -999,6 +1061,7 @@ function drawPendulum(pos, glow, glowLevel){
 let litIdx = -1, curIdx = -1;
 function frame(){
   requestAnimationFrame(frame);
+  watchdog();
   let pos = 0, glow = 0, glowLvl = 1, cur = -1, flash = 0;
   if(playing && ctx && events.length){
     const now = audioNow();
@@ -1058,7 +1121,7 @@ requestAnimationFrame(frame);
 if('serviceWorker' in navigator && /^https?:$/.test(location.protocol)){
   navigator.serviceWorker.register('sw.js').catch(() => {});
 }
-window.__metronome = {S, stats, hooks, get events(){ return events; }, get ctx(){ return ctx; }, get master(){ return master; }, start, stop};   // for debugging/tests
+window.__metronome = {S, stats, hooks, get worker(){ return worker; }, makeWorker, get stale(){ return ctxStale; }, get events(){ return events; }, get ctx(){ return ctx; }, get master(){ return master; }, start, stop};   // for debugging/tests
 </script>
 <script src="score.js"></script>
 </body>
